@@ -1,0 +1,8 @@
+﻿node_modules/
+.next/
+userbase/
+backup/
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
