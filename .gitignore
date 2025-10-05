@@ -1,0 +1,20 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+.next/cache/
+.vercel/
+
+# Build outputs
+dist/
+coverage/
+
+# OS / misc
+.DS_Store
+Thumbs.db
