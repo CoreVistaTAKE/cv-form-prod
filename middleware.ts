@@ -5,38 +5,30 @@ const ENABLE_BASIC_AUTH = (process.env.ENABLE_BASIC_AUTH ?? "1") !== "0";
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || "";
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || "";
 
+/**
+ * 外側(プロキシ)の視点で正規化が必要かだけを判定。
+ * 必要なときだけ Location を https://<CANONICAL_HOST>/... で返す。
+ */
 function needsCanonicalRedirect(req: NextRequest): string | null {
-  const url = req.nextUrl.clone();
   const xfProto = (req.headers.get("x-forwarded-proto") || "").toLowerCase();
-  const xfHost  = (req.headers.get("x-forwarded-host")  || req.headers.get("host") || url.host).toLowerCase();
+  const xfHost  = (req.headers.get("x-forwarded-host")  || req.headers.get("host") || "").toLowerCase();
 
-  let changed = false;
+  // すでに外部視点で正規なら（https + 正規ホスト）リダイレクト不要
+  if (xfProto === "https" && xfHost === CANONICAL_HOST) return null;
 
-  // Force https (外部的に https 以外なら https へ)
-  if (xfProto !== "https" || url.protocol !== "https:") {
-    url.protocol = "https:";
-    changed = true;
-  }
-
-  // ★ 常に正規ホストへ（内部で localhost:PORT を持っている場合がある）
-  if (url.hostname !== CANONICAL_HOST || xfHost !== CANONICAL_HOST) {
-    url.hostname = CANONICAL_HOST;
-    changed = true;
-  }
-
-  // ★ ポートを消去（:34388 など内部ポートを Location から排除）
-  if (url.port) {
-    url.port = "";
-    changed = true;
-  }
-
-  return changed ? url.toString() : null;
+  // 必要なときだけ正規URLを構築して返す
+  const url = req.nextUrl.clone();
+  url.protocol = "https:";
+  url.hostname = CANONICAL_HOST;
+  url.port = ""; // Location から内部ポートを排除
+  return url.toString();
 }
 
 function basicAuthOk(req: NextRequest): boolean {
   const h = req.headers.get("authorization");
   if (!h || !h.startsWith("Basic ")) return false;
   try {
+    // Edge Runtime では atob が使える
     const decoded = atob(h.slice(6)); // "user:pass"
     const idx = decoded.indexOf(":");
     const user = idx >= 0 ? decoded.slice(0, idx) : decoded;
