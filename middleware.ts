@@ -12,15 +12,21 @@ function needsCanonicalRedirect(req: NextRequest): string | null {
 
   let changed = false;
 
-  // Force https
-  if (xfProto !== "https") {
+  // Force https (外部的に https 以外なら https へ)
+  if (xfProto !== "https" || url.protocol !== "https:") {
     url.protocol = "https:";
     changed = true;
   }
 
-  // Force canonical host
-  if (xfHost !== CANONICAL_HOST) {
-    url.host = CANONICAL_HOST;
+  // ★ 常に正規ホストへ（内部で localhost:PORT を持っている場合がある）
+  if (url.hostname !== CANONICAL_HOST || xfHost !== CANONICAL_HOST) {
+    url.hostname = CANONICAL_HOST;
+    changed = true;
+  }
+
+  // ★ ポートを消去（:34388 など内部ポートを Location から排除）
+  if (url.port) {
+    url.port = "";
     changed = true;
   }
 
@@ -33,8 +39,8 @@ function basicAuthOk(req: NextRequest): boolean {
   try {
     const decoded = atob(h.slice(6)); // "user:pass"
     const idx = decoded.indexOf(":");
-    const user = decoded.slice(0, idx);
-    const pass = decoded.slice(idx + 1);
+    const user = idx >= 0 ? decoded.slice(0, idx) : decoded;
+    const pass = idx >= 0 ? decoded.slice(idx + 1) : "";
     return user === BASIC_AUTH_USER && pass === BASIC_AUTH_PASS;
   } catch {
     return false;
