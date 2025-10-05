@@ -5,45 +5,33 @@ const ENABLE_BASIC_AUTH = (process.env.ENABLE_BASIC_AUTH ?? "1") !== "0";
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || "";
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || "";
 
-/** x-forwarded-host を複数値/ポート付きでも正規化 */
-function normalizedForwardedHost(req: NextRequest): string {
+/** 外形 Host を正規化（複数値/ポート付き対応） */
+function externalHost(req: NextRequest): string {
   const raw = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
   return raw.split(",")[0].trim().toLowerCase().replace(/:\d+$/, "");
 }
 
-/** x-forwarded-proto を複数値でも先頭だけ採用 */
-function normalizedForwardedProto(req: NextRequest): string {
+/** 外形 Proto を正規化（複数値対応） */
+function externalProto(req: NextRequest): string {
   const raw = req.headers.get("x-forwarded-proto") || "";
   return raw.split(",")[0].trim().toLowerCase();
 }
 
-/** https + 正規ホスト + ポート消去 へ 301 が必要なら URL を返す */
+/** Location を外形情報だけで明示組み立て（ポートを絶対に出さない） */
+function buildExternalUrl(req: NextRequest, host: string): string {
+  const u = req.nextUrl;
+  const path = u.pathname || "/";
+  const search = u.search || "";
+  const hash = u.hash || "";
+  return `https://${host}${path}${search}${hash}`;
+}
+
+/** https + 正規ホスト 以外なら 301 先 URL を返す（外形のみで判定） */
 function needsCanonicalRedirect(req: NextRequest): string | null {
-  const xfProto = normalizedForwardedProto(req);
-  const xfHost  = normalizedForwardedHost(req);
-
-  const url = req.nextUrl.clone();
-  let changed = false;
-
-  // https 強制（外形/内部いずれも https で統一）
-  if (xfProto !== "https" || url.protocol !== "https:") {
-    url.protocol = "https:";
-    changed = true;
-  }
-
-  // 正規ホスト強制（:443 等のポート付きも排除）
-  if (xfHost !== CANONICAL_HOST || url.hostname !== CANONICAL_HOST) {
-    url.hostname = CANONICAL_HOST;
-    changed = true;
-  }
-
-  // Location にポート番号を出さない
-  if (url.port) {
-    url.port = "";
-    changed = true;
-  }
-
-  return changed ? url.toString() : null;
+  const protoOk = externalProto(req) === "https";
+  const hostOk = externalHost(req) === CANONICAL_HOST;
+  if (protoOk && hostOk) return null;
+  return buildExternalUrl(req, CANONICAL_HOST);
 }
 
 /** Authorization: Basic を robust に復号（Edge/Node 双対応） */
@@ -78,8 +66,8 @@ function withSecurityHeaders(res: NextResponse): NextResponse {
   res.headers.set("X-Content-Type-Options", "nosniff");
   res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   res.headers.set("Permissions-Policy", "accelerometer=(), autoplay=(), camera=(), microphone=(), geolocation=(), interest-cohort=()");
-  // Basic 認証運用中はインデックス禁止（誤公開対策）
   if (ENABLE_BASIC_AUTH) {
+    // 認証中はインデックス禁止（誤公開防止）
     res.headers.set("X-Robots-Tag", "noindex, nofollow");
   }
   return res;
@@ -92,22 +80,22 @@ function unauthorized(): NextResponse {
 }
 
 export function middleware(req: NextRequest) {
-  // 1) 正規化 301（https + 正規ホスト + ポート削除）— 最優先
+  // 1) 正規化 301（https + 正規ホストのみで判定）— 最優先
   const target = needsCanonicalRedirect(req);
   if (target) return withSecurityHeaders(NextResponse.redirect(target, 301));
 
   // 2) Basic 認証（正規 URL に着地後）
   const p = req.nextUrl.pathname;
-  const isHealth = p === "/healthz" || p === "/api/healthz"; // 死活監視は素通し
+  const isHealth = p === "/healthz" || p === "/api/healthz"; // 監視系は素通し
   if (!isHealth && ENABLE_BASIC_AUTH && BASIC_AUTH_USER && BASIC_AUTH_PASS) {
     if (!basicAuthOk(req)) return unauthorized();
   }
 
-  // 3) 通常レスポンス（200 等）にもセキュリティ標準ヘッダを常時付与
+  // 3) 通常レスポンスにもセキュリティ標準ヘッダを常時付与
   return withSecurityHeaders(NextResponse.next());
 }
 
-// ミドルウェア適用範囲（内部静的配信は除外）
+// 適用範囲（内部静的配信は除外）
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
