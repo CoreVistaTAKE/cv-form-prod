@@ -1,0 +1,13 @@
+{
+  "when": "2025-11-14T23:42:28",
+  "inputs": {
+    "host": "https://www.form.visone-ai.jp",
+    "bldg": "テストビルA",
+    "user": "form_PJ1"
+  },
+  "createRes": "",
+  "statusTrace": [],
+  "nextSeqRes": null,
+  "chosenSeq": null,
+  "processRes": null
+}

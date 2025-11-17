@@ -1,4 +1,5 @@
 "use client";
+
 import { useEffect } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { PagesSidebar } from "@/components/PagesSidebar";
@@ -12,6 +13,7 @@ function BuilderOps(){
   const exportUserBase=()=>{ const raw = localStorage.getItem("cv_form_schema_v049")||"{}"; try{ const obj=JSON.parse(raw); if(obj?.meta){ obj.meta.fixedCompany = ""; obj.meta.fixedBuilding = ""; } const data = JSON.stringify(obj); localStorage.setItem("cv_form_base_v049", data); const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([data],{type:"application/json"})); a.download="form_base_v049.json"; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),500);}catch(e){ alert("エクスポート失敗: "+(e as Error).message); } };
   return (
     <div className="card">
+
       <div className="form-title mb-2">ビルダー操作</div>
       <div className="flex items-center" style={{gap:8, flexWrap:"wrap"}}>
         <button className="btn-secondary" onClick={importSchema}>インポート</button>

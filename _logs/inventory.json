@@ -1,0 +1,120 @@
+{
+  "timestamp": "2025-11-08 16:50:58",
+  "project": "C:\\Users\\taked\\Desktop\\CoreVistaJP\\base\\form\\corevista-form-builder-starter-v0.5.0",
+  "node": "v20.16.0",
+  "npm": "10.8.1",
+  "package": {
+    "name": "corevista-form-builder-starter",
+    "version": "0.5.27",
+    "private": true,
+    "engines": {
+      "node": "20.x",
+      "npm": "10.x"
+    },
+    "scripts": {
+      "dev": "next dev",
+      "build": "next build",
+      "start": "next start -p $PORT",
+      "heroku-postbuild": "npm run build"
+    },
+    "dependencies": {
+      "clsx": "2.1.1",
+      "dayjs": "1.11.13",
+      "jimp": "^1.6.0",
+      "nanoid": "5.0.7",
+      "next": "14.2.6",
+      "qrcode": "^1.5.4",
+      "react": "18.3.1",
+      "react-dom": "18.3.1",
+      "react-hook-form": "7.53.0",
+      "zod": "3.23.8",
+      "zustand": "4.5.2"
+    },
+    "devDependencies": {
+      "@types/node": "20.14.12",
+      "@types/react": "18.3.5",
+      "@types/react-dom": "18.3.0",
+      "eslint": "8.57.0",
+      "eslint-config-next": "14.2.6",
+      "typescript": "5.6.2"
+    }
+  },
+  "nextConfigs": [
+    "C:\\Users\\taked\\Desktop\\CoreVistaJP\\base\\form\\corevista-form-builder-starter-v0.5.0\\next.config.base.js",
+    "C:\\Users\\taked\\Desktop\\CoreVistaJP\\base\\form\\corevista-form-builder-starter-v0.5.0\\next.config.base.mjs",
+    "C:\\Users\\taked\\Desktop\\CoreVistaJP\\base\\form\\corevista-form-builder-starter-v0.5.0\\next.config.js",
+    "C:\\Users\\taked\\Desktop\\CoreVistaJP\\base\\form\\corevista-form-builder-starter-v0.5.0\\next.config.mjs"
+  ],
+  "middleware": [
+    {
+      "size": 264,
+      "path": "middleware.ts"
+    },
+    {
+      "size": 264,
+      "path": "middleware.prod.ts"
+    }
+  ],
+  "exists": {
+    "components/UBHeader.tsx": false,
+    "app/page.tsx": true,
+    "app/builder/BuildingFolderPanel.tsx": false,
+    "app/builder/page.tsx": true,
+    "app/api/builder/create-building/route.ts": true,
+    "app/user-builder/_components/UserBuilderPanels.tsx": false,
+    "app/user-builder/page.tsx": true,
+    "app/fill/page.tsx": true,
+    "app/preview/page.tsx": true,
+    "app/api/forms/submit/route.ts": true,
+    "app/api/health/route.ts": true,
+    "app/user-builder/page.client.tsx": true,
+    "app/layout.tsx": true,
+    "app/globals.css": true
+  },
+  "duplicates": [],
+  "envKeys": [
+    {
+      "key": "FLOW_CREATE_FORM_FOLDER_URL",
+      "present": true,
+      "sample": "http...AH8E"
+    },
+    {
+      "key": "FLOW_PROCESS_FORM_SUBMISSION_URL",
+      "present": true,
+      "sample": "http..._d7Y"
+    },
+    {
+      "key": "FLOW_SAVE_FILES_URL",
+      "present": true,
+      "sample": "http...hMfA"
+    },
+    {
+      "key": "FLOW_GET_NEXT_SEQ_URL",
+      "present": true,
+      "sample": "http...fJAM"
+    },
+    {
+      "key": "FLOW_FORWARD_HANDSHAKE_MS",
+      "present": true,
+      "sample": "1500"
+    }
+  ],
+  "dataFiles": [
+    {
+      "exists": false,
+      "path": "data\\MAP.xlsx"
+    },
+    {
+      "exists": false,
+      "path": "data\\建物設備点検報告書_雛形.xlsx"
+    }
+  ],
+  "probe": {
+    "create_building": {
+      "error": "対象のコンピューターによって拒否されたため、接続できませんでした。 (localhost:3000)"
+    },
+    "health": {
+      "error": "対象のコンピューターによって拒否されたため、接続できませんでした。 (localhost:3000)"
+    }
+  }
+}

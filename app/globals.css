@@ -90,6 +90,14 @@ textarea { resize:vertical; }
 .header .form-title,
 .header .nav a { color: #eaf0ff !important; } /* テーマ非依存で淡い色に固定 */
 
+/* user-builder 画面内の“不要表示”抑止（class/属性は合致したものだけが隠れる安全策） */
+[user-builder] .debug,
+[user-builder] .api-info,
+[user-builder] [data-debug],
+[user-builder] details[data-debug] {
+  display: none !important;
+}
+
 [data-theme="white"] .btn-blue-light,
 [data-theme="white"] .btn-yellow-light,
 [data-theme="white"] .btn-red-light {
@@ -98,4 +106,27 @@ textarea { resize:vertical; }
 }
 [data-theme="white"] .btn-blue-light   { background:#eef2ff; }
 [data-theme="white"] .btn-yellow-light { background:#fff7cc; }
-[data-theme="white"] .btn-red-light    { background:#ffe4e6; }
+[data-theme="white"] .btn-red-light    { background:#ffe4e6; }  
+/* v0.5.23 mobile header */
+@media (max-width: 520px){
+  .header .form-title { font-size:14px; line-height:18px; }
+}  
+/* v0.5.24 mobile header */
+@media (max-width: 520px){
+  .header .form-title { font-size:14px; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+}  
+/* v0.5.25 mobile header */
+@media (max-width: 520px){
+  .header .form-title { font-size:14px; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+}
+
+/* v0.5.26 burger fixed (blue/white) */
+.header .nav details > summary { background:#3b82f6 !important; color:#ffffff !important; border:1px solid #3b82f6 !important; border-radius:10px; padding:6px 10px; }
+.header .nav details > summary::-webkit-details-marker { display:none; }
+.header .nav details[open] > summary { filter:brightness(1.05); }
+
+/* v0.5.27 burger fixed (blue/white incl. dropdown) */
+.header .nav details > summary { background:#3b82f6 !important; color:#ffffff !important; border:1px solid #3b82f6 !important; border-radius:10px; padding:6px 10px; }
+.header .nav details > div     { background:#3b82f6 !important; border:1px solid #2563eb !important; border-radius:10px; }
+.header .nav details > div a   { color:#ffffff !important; }
+.header .nav details > div a:hover { text-decoration:underline; filter:brightness(1.06); }

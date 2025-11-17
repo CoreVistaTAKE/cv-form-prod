@@ -1,10 +1,24 @@
 "use client";
+
 import Link from "next/link";
 import { CHANGELOG } from "@/data/changelog";
 
 export default function HomePage(){
   return (
     <div className="space-y-3">
+
+
+
+
+
+
+
+
+
+
+
+
+
       <div className="grid-2">
         <div className="tile">
           <div>
@@ -28,7 +42,7 @@ export default function HomePage(){
 
         <div className="tile">
           <div>
-            <h3>入力（ウィザード）</h3>
+            <h3>入力フォーム</h3>
             <p>現場入力・修正・最終確認・完了までをガイド付きで実施。</p>
           </div>
           <div className="actions">
