@@ -1,0 +1,6 @@
+__backup/
+TOP/
+_logs/
+tmp/
+*.bak
+*.bak.*

@@ -1,7 +1,32 @@
+# Node / Next
 node_modules/
 .next/
-out/
-dist/
-backup/
-*.log
+.vercel/
+.turbo/
+coverage/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Env & secrets (絶対にコミットしない)
+.env
+.env.*.local
+.env.local
+!.env.example
+
+# Backups / temp / dumps
+__backup/
+TOP/
+tmp/
+_logs/
+*.log
+*.bak
+*.old.*
+*.zip
+*.7z
+
+# Test/Artifacts
+flow_test_log.json
+payload*.json
+ac.abort()
