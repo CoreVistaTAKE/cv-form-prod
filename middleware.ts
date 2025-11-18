@@ -6,31 +6,37 @@ const BASIC_USER = process.env.BASIC_AUTH_USER;
 const BASIC_PASS = process.env.BASIC_AUTH_PASS;
 const CANON = process.env.NEXT_PUBLIC_CANONICAL_HOST;
 
-// Next.js 的に安全な最小マッチャ。判定は関数内で行う
-export const config = {
-  matcher: ["/:path*"],
-};
+// すべてのパスを対象にして、関数内で除外する
+export const config = { matcher: ["/:path*"] };
 
 export function middleware(req: NextRequest) {
   const { pathname, origin, search } = req.nextUrl;
 
-  // 1) /fill と /api は必ず素通し（匿名可）
+  // 静的/画像は即スルー
   if (
-    pathname.startsWith("/fill") ||
-    pathname.startsWith("/api/")
+    pathname.startsWith("/_next") ||
+    pathname === "/favicon.ico" ||
+    /\.(png|jpe?g|svg|gif|ico)$/.test(pathname)
   ) {
     return NextResponse.next();
   }
 
-  // 2) カノニカルホスト強制（必要時のみ）
-  if (CANON) {
-    const host = req.headers.get("host");
-    if (host && host !== CANON) {
-      return NextResponse.redirect(`${origin.replace(host, CANON)}${pathname}${search}`);
-    }
+  // /fill と フォームAPIは匿名で素通し
+  if (
+    pathname.startsWith("/fill") ||
+    pathname.startsWith("/api/forms/") ||
+    pathname.startsWith("/api/flows/process-form-submission")
+  ) {
+    return NextResponse.next();
   }
 
-  // 3) 管理系だけ Basic 認証
+  // カノニカルホスト強制
+  const host = req.headers.get("host");
+  if (CANON && host && host !== CANON) {
+    return NextResponse.redirect(`${origin.replace(host, CANON)}${pathname}${search}`);
+  }
+
+  // 管理系のみ Basic 認証
   const needsAuth =
     pathname.startsWith("/user-builder") ||
     pathname.startsWith("/manual") ||
