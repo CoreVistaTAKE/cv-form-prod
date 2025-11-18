@@ -1,4 +1,4 @@
-// middleware.ts
+// app/middleware.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
@@ -6,11 +6,21 @@ const BASIC_USER = process.env.BASIC_AUTH_USER;
 const BASIC_PASS = process.env.BASIC_AUTH_PASS;
 const CANON = process.env.NEXT_PUBLIC_CANONICAL_HOST;
 
+export const config = {
+  // 正規表現ではなく、全受けしてコードで除外する
+  matcher: ["/:path*"],
+};
+
 export function middleware(req: NextRequest) {
   const { pathname, origin, search } = req.nextUrl;
 
-  // 1) /fill と フォームAPI/投稿API は常に匿名で素通し（QR直打ちを阻害しない）
+  // --- 1) 例外（必ず素通し） ---
   if (
+    pathname.startsWith("/_next") ||
+    pathname === "/favicon.ico" ||
+    // 静的アセット
+    /\.(png|jpg|jpeg|svg|gif|ico)$/.test(pathname) ||
+    // フォーム入力と提出APIは匿名で通す
     pathname.startsWith("/fill") ||
     pathname.startsWith("/api/forms/") ||
     pathname.startsWith("/api/flows/process-form-submission")
@@ -18,15 +28,17 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2) カノニカルホスト強制（必要な場合のみ）
+  // --- 2) カノニカル強制（必要時のみ） ---
   if (CANON) {
     const host = req.headers.get("host");
     if (host && host !== CANON) {
-      return NextResponse.redirect(`${origin.replace(host, CANON)}${pathname}${search}`);
+      return NextResponse.redirect(
+        `${origin.replace(host, CANON)}${pathname}${search}`
+      );
     }
   }
 
-  // 3) 管理系のみ Basic 認証 (/user-builder, /manual, /admin)
+  // --- 3) 管理系のみ Basic 認証 ---
   const needsAuth =
     pathname.startsWith("/user-builder") ||
     pathname.startsWith("/manual") ||
@@ -52,5 +64,3 @@ export function middleware(req: NextRequest) {
 
   return NextResponse.next();
 }
-
-// ← export const config は置かない（ビルド時の正規表現パース事故を避ける）
