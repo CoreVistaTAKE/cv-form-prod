@@ -39,8 +39,13 @@
   ],
   "exclude": [
     "node_modules",
-    ".next",
-    "backup",
-    "userbase"
+    "__backup",
+    "__backup/**",
+    "TOP",
+    "TOP/**",
+    "tmp",
+    "tmp/**",
+    "**/*.bak",
+    "**/*.old.*"
   ]
 }
