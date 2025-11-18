@@ -1,6 +1,6 @@
 'use client';
-import React from 'react';
-import UserBuilderPanels from './panels/UserBuilderPanels';
+import React from "react";
+import UserBuilderPanels from "./panels/UserBuilderPanels";
 
 type Props = {
   createUrl: string;
@@ -10,6 +10,5 @@ type Props = {
 };
 
 export default function UserBuilderClient(props: Props) {
-  // ここで UI は全部 UserBuilderPanels に委譲
   return <UserBuilderPanels {...props} />;
 }
