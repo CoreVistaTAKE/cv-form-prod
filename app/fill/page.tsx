@@ -1,36 +1,27 @@
 // app/fill/page.tsx
-export const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic"; // QR直打ちでも常に最新
 
 import FillClient from "./FillClient";
-import { Wizard } from "@/components/Wizard";
 
 type Props = {
   searchParams?: { user?: string; bldg?: string };
 };
 
 export default function FillPage({ searchParams }: Props) {
-  const user = (searchParams?.user ?? "").toString();
+  const user = (searchParams?.user ?? process.env.NEXT_PUBLIC_DEFAULT_USER ?? "").toString();
   const bldg = (searchParams?.bldg ?? "").toString();
+  const host = (process.env.NEXT_PUBLIC_DEFAULT_HOST ?? "").toString();
 
-  // URLに user/bldg が揃っていれば、その建物用ウィザードを直接表示
-  if (user && bldg) {
+  // user/bldg が無い時はガード
+  if (!user || !bldg) {
     return (
-      <div className="space-y-6">
-        <div className="card">
-          <div className="form-title">入力ウィザード</div>
-        </div>
-        <FillClient user={user} bldg={bldg} />
+      <div style={{ padding: 16 }}>
+        <h1>パラメータ不足</h1>
+        <p>URL に <code>?user=xxx&bldg=YYY</code> を指定してください。</p>
       </div>
     );
   }
 
-  // パラメータ不足時は従来のウィザード（共通モード）を出す
-  return (
-    <div className="space-y-6">
-      <div className="card">
-        <div className="form-title">入力ウィザード</div>
-      </div>
-      <Wizard />
-    </div>
-  );
+  // クエリあり → フォーム解決＆埋め込み
+  return <FillClient user={user} bldg={bldg} host={host} />;
 }

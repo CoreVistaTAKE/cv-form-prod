@@ -6,19 +6,10 @@ const BASIC_USER = process.env.BASIC_AUTH_USER;
 const BASIC_PASS = process.env.BASIC_AUTH_PASS;
 const CANON = process.env.NEXT_PUBLIC_CANONICAL_HOST;
 
-// 1) ミドルウェア適用対象（除外ルートに注意）
-//   - /fill, /api/forms/*, /api/flows/process-form-submission は素通し
-export const config = {
-  matcher: [
-    // 静的/内部を除外
-    "/((?!_next/|favicon.ico|.*\\.(png|jpg|jpeg|svg|gif|ico)$).*)",
-  ],
-};
-
 export function middleware(req: NextRequest) {
   const { pathname, origin, search } = req.nextUrl;
 
-  // 2) /fill と フォーム API は必ず素通し（匿名アクセスを許可）
+  // 1) /fill と フォームAPI/投稿API は常に匿名で素通し（QR直打ちを阻害しない）
   if (
     pathname.startsWith("/fill") ||
     pathname.startsWith("/api/forms/") ||
@@ -27,7 +18,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 3) カノニカルホスト強制（必要時のみ）
+  // 2) カノニカルホスト強制（必要な場合のみ）
   if (CANON) {
     const host = req.headers.get("host");
     if (host && host !== CANON) {
@@ -35,7 +26,7 @@ export function middleware(req: NextRequest) {
     }
   }
 
-  // 4) Basic 認証を掛けるのは “管理系だけ”
+  // 3) 管理系のみ Basic 認証 (/user-builder, /manual, /admin)
   const needsAuth =
     pathname.startsWith("/user-builder") ||
     pathname.startsWith("/manual") ||
@@ -50,7 +41,6 @@ export function middleware(req: NextRequest) {
         headers: { "WWW-Authenticate": 'Basic realm="Restricted"' },
       });
     }
-    // Edge Runtime では atob 使用可
     const [u, p] = atob(encoded).split(":");
     if (u !== BASIC_USER || p !== BASIC_PASS) {
       return new Response("Forbidden", {
@@ -62,3 +52,5 @@ export function middleware(req: NextRequest) {
 
   return NextResponse.next();
 }
+
+// ← export const config は置かない（ビルド時の正規表現パース事故を避ける）
