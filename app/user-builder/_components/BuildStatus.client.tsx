@@ -82,7 +82,32 @@ export default function BuildStatus({
         const json = (await res.json().catch(() => ({}))) as StatusRes;
         const p = typeof json.pct === "number" ? json.pct : 0;
         setPct(p);
-        if (json.url) setUrl(json.url);
+
+        if (json.url) {
+          setUrl(json.url);
+
+          // ==== 追加：localStorage へ永続化（/fill の選択UIが参照） ====
+          try {
+            // 建物→URL 辞書
+            const urlsRaw = localStorage.getItem("cv_form_urls") || "{}";
+            const urls = JSON.parse(urlsRaw) as Record<string, string>;
+            if (info.bldg) {
+              urls[info.bldg] = json.url;
+              localStorage.setItem("cv_form_urls", JSON.stringify(urls));
+            }
+
+            // 建物候補一覧（重複排除）
+            const optsRaw = localStorage.getItem("cv_building_options") || "[]";
+            const opts = new Set<string>(JSON.parse(optsRaw));
+            if (info.bldg) opts.add(info.bldg);
+            localStorage.setItem("cv_building_options", JSON.stringify(Array.from(opts)));
+
+            // 直近
+            if (info.bldg) localStorage.setItem("cv_last_building", info.bldg);
+          } catch {}
+        }
+        // =============================================
+
         setErr(null);
         if (p >= 100) return;
       } catch (e: any) {

@@ -21,7 +21,8 @@ export default function FillClient({ user, bldg, host }: Props) {
 
   // 直指定があれば即 Wizard（最短ルート：Flow不要）
   if (user && bldg) {
-    return <Wizard /* 必要なら props で user/bldg を伝播 */ />;
+    // Wizard 側の型が未定でも通るよう any キャスト
+    return <Wizard {...({ user, bldg, host } as any)} />;
   }
 
   // ===== 以下は建物選択UI（任意運用用） =====
