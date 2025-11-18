@@ -1,25 +1,36 @@
 // app/fill/page.tsx
-export const dynamic = "force-dynamic"; // 常に最新（QR 直打ちでもキャッシュを避ける）
+export const dynamic = "force-dynamic";
 
 import FillClient from "./FillClient";
+import { Wizard } from "@/components/Wizard";
 
 type Props = {
   searchParams?: { user?: string; bldg?: string };
 };
 
 export default function FillPage({ searchParams }: Props) {
-  const user = (searchParams?.user ?? process.env.NEXT_PUBLIC_DEFAULT_USER ?? "").toString();
+  const user = (searchParams?.user ?? "").toString();
   const bldg = (searchParams?.bldg ?? "").toString();
 
-  // user/bldg のどちらかでも無いとフォーム出せないので、簡易ガードだけ
-  if (!user || !bldg) {
+  // URLに user/bldg が揃っていれば、その建物用ウィザードを直接表示
+  if (user && bldg) {
     return (
-      <div style={{ padding: 16 }}>
-        <h1>パラメータ不足</h1>
-        <p>URL に <code>?user=xxx&bldg=YYY</code> を指定してください。</p>
+      <div className="space-y-6">
+        <div className="card">
+          <div className="form-title">入力ウィザード</div>
+        </div>
+        <FillClient user={user} bldg={bldg} />
       </div>
     );
   }
 
-  return <FillClient user={user} bldg={bldg} />;
+  // パラメータ不足時は従来のウィザード（共通モード）を出す
+  return (
+    <div className="space-y-6">
+      <div className="card">
+        <div className="form-title">入力ウィザード</div>
+      </div>
+      <Wizard />
+    </div>
+  );
 }
