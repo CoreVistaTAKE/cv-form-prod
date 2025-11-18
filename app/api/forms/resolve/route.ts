@@ -1,40 +1,19 @@
 // app/api/forms/resolve/route.ts
-export const dynamic = "force-dynamic";
-
-import type { NextRequest } from "next/server";
-
-type Body = {
-  varUser?: string;
-  varBldg?: string;
-  varHost?: string;
-  user?: string;
-  bldg?: string;
-  host?: string;
-};
+import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  try {
-    const body: Body = await req.json().catch(() => ({} as any));
-    const user = (body.varUser || body.user || process.env.NEXT_PUBLIC_DEFAULT_USER || "").toString();
-    const bldg = (body.varBldg || body.bldg || "").toString();
-    const host = (body.varHost || body.host || process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp").toString();
+  const body = await req.json().catch(() => ({}));
+  const user = (body.varUser ?? body.user ?? process.env.NEXT_PUBLIC_DEFAULT_USER ?? "").toString();
+  const bldg = (body.varBldg ?? body.bldg ?? "").toString();
+  const host = (body.varHost ?? body.host ?? process.env.NEXT_PUBLIC_DEFAULT_HOST ?? "").toString();
 
-    if (!user || !bldg) {
-      return new Response(
-        JSON.stringify({ ok: false, exists: false, reason: "missing user or bldg" }),
-        { status: 400 }
-      );
-    }
-
-    const url =
-      `${host.replace(/\/+$/, "")}/fill` +
-      `?user=${encodeURIComponent(user)}&bldg=${encodeURIComponent(bldg)}`;
-
-    return Response.json({ ok: true, exists: true, url });
-  } catch (e: any) {
-    return new Response(
-      JSON.stringify({ ok: false, reason: e?.message || "unexpected error" }),
-      { status: 500 }
-    );
+  if (!user || !bldg || !host) {
+    return NextResponse.json({ ok: false, reason: "missing params" }, { status: 400 });
   }
+
+  const base = host.replace(/\/+$/,"");
+  const url = `${base}/fill?user=${encodeURIComponent(user)}&bldg=${encodeURIComponent(bldg)}`;
+
+  // ここで GetBuildStatus を叩いて存在確認することも可能だが、失敗してもURLは返す。
+  return NextResponse.json({ ok: true, exists: true, url });
 }
