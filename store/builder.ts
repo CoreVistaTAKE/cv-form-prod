@@ -62,6 +62,13 @@ export interface FormMeta {
   theme?: Theme;
   /** 本文背景色（任意）。未設定ならUI側で既定色にフォールバック可 */
   contentBg?: string;
+
+  /**
+   * ユーザービルダーで設定する「対象外」情報。
+   * フォーム側の描画／デフォルト値（「入力しない」）に利用する想定。
+   */
+  excludePages?: string[];
+  excludeFields?: string[];
 }
 
 interface State {
@@ -98,6 +105,8 @@ const defaultMeta: FormMeta = {
   fixedBuilding: "",
   theme: "black",
   // contentBg は任意。必要ならここで既定色を指定してもよい（例：contentBg: "#0b0f1a"）
+  excludePages: [],
+  excludeFields: [],
 };
 
 function ensureSystemPages(pages: Page[]): Page[] {
@@ -143,7 +152,10 @@ export const useBuilderStore = create<State>((set, get) => ({
         const pages = ensureSystemPages(data.pages || []);
         const meta = { ...defaultMeta, ...(data.meta || {}) };
         const fields = data.fields || [];
-        const active = data.activePageId || pages.find((p) => p.type === "section")?.id || pages[0]?.id;
+        const active =
+          data.activePageId ||
+          pages.find((p) => p.type === "section")?.id ||
+          pages[0]?.id;
         set({ meta, pages, fields, activePageId: active, hydrated: true });
         return;
       }
