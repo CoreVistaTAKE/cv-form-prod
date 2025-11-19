@@ -1,3 +1,4 @@
+// app/preview/page.tsx
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -36,15 +37,6 @@ export default function PreviewPage(){
     return m;
   },[pages,fields]);
 
-  const downloadJson=()=>{
-    const data = localStorage.getItem("cv_form_schema_v049") || JSON.stringify({meta,pages,fields},null,2);
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(new Blob([data],{type:"application/json"}));
-    a.download="form_schema_v049.json";
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),500);
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -53,14 +45,13 @@ export default function PreviewPage(){
           <button className="btn-secondary" onClick={()=>toggleAll(true)}>すべて展開</button>
           <button className="btn-secondary" onClick={()=>toggleAll(false)}>すべて折りたたみ</button>
           <button className="btn-secondary" onClick={()=>window.print()}>印刷 / PDF保存</button>
-          <button className="btn" onClick={downloadJson}>スキーマJSON</button>
         </div>
       </div>
 
       <div className="card">
-  <div style={{display:"flex", justifyContent:"flex-end", marginBottom:12}}>
-    <a href="/finalize" className="btn" style={{textDecoration:"none"}}>完成フォームを更新</a>
-  </div>
+        <div style={{display:"flex", justifyContent:"flex-end", marginBottom:12}}>
+          <a href="/finalize" className="btn" style={{textDecoration:"none"}}>完成フォームを更新</a>
+        </div>
         <div className="form-title mb-1">{meta.title||"無題のフォーム"}</div>
         {(meta.descriptions||[]).filter(Boolean).map((d,i)=>(<p key={i} className="form-text">{d}</p>))}
       </div>
