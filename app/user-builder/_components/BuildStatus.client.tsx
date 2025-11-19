@@ -24,11 +24,7 @@ export default function BuildStatus({
   statusUrl,
   justTriggered,
 }: Props) {
-  const [info, setInfo] = useState<{
-    user?: string;
-    bldg?: string;
-    statusPath?: string;
-  }>({});
+  const [info, setInfo] = useState<{ user?: string; bldg?: string; statusPath?: string }>({});
   const [pct, setPct] = useState<number>(0);
   const [url, setUrl] = useState<string | undefined>();
   const [err, setErr] = useState<string | null>(null);
@@ -39,9 +35,7 @@ export default function BuildStatus({
     if (statusPath) {
       const next = { user, bldg, statusPath };
       setInfo(next);
-      try {
-        localStorage.setItem("cv:lastBuild", JSON.stringify(next));
-      } catch {}
+      try { localStorage.setItem("cv:lastBuild", JSON.stringify(next)); } catch {}
       return;
     }
     try {
@@ -57,9 +51,7 @@ export default function BuildStatus({
   useEffect(() => {
     if (!info.statusPath) return;
     if (!statusUrl) {
-      setErr(
-        "FLOW_GET_BUILD_STATUS_URL が未設定です（statusUrl が渡されていません）。"
-      );
+      setErr("FLOW_GET_BUILD_STATUS_URL が未設定です（statusUrl が渡されていません）。");
       return;
     }
 
@@ -82,7 +74,29 @@ export default function BuildStatus({
         const json = (await res.json().catch(() => ({}))) as StatusRes;
         const p = typeof json.pct === "number" ? json.pct : 0;
         setPct(p);
-        if (json.url) setUrl(json.url);
+
+        if (json.url) {
+          setUrl(json.url);
+
+          // ★ 追加：/fill の選択UIが参照するローカル保存
+          try {
+            // 建物→URL 辞書
+            const urlsRaw = localStorage.getItem("cv_form_urls") || "{}";
+            const urls = JSON.parse(urlsRaw) as Record<string, string>;
+            if (info.bldg) {
+              urls[info.bldg] = json.url;
+              localStorage.setItem("cv_form_urls", JSON.stringify(urls));
+            }
+            // 建物候補一覧
+            const optsRaw = localStorage.getItem("cv_building_options") || "[]";
+            const opts = new Set<string>(JSON.parse(optsRaw));
+            if (info.bldg) opts.add(info.bldg);
+            localStorage.setItem("cv_building_options", JSON.stringify(Array.from(opts)));
+            // 直近
+            if (info.bldg) localStorage.setItem("cv_last_building", info.bldg);
+          } catch {}
+        }
+
         setErr(null);
         if (p >= 100) return;
       } catch (e: any) {
@@ -92,32 +106,21 @@ export default function BuildStatus({
         setLoading(false);
       }
 
-      if (!cancelled) {
-        timer = setTimeout(poll, 1500);
-      }
+      if (!cancelled) timer = setTimeout(poll, 1500);
     };
 
     poll();
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [info.statusPath, statusUrl]);
 
   const displayPct = Math.min(100, Math.max(0, pct || 0));
-  const qrImageUrl =
-    url &&
-    `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(
-      url
-    )}`;
+  const qrImageUrl = url && `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`;
 
   if (!info.statusPath) {
     return (
       <div className="text-xs text-slate-500">
         まだ建物フォルダが作成されていません。
-        <br />
-        先に「建物フォルダ作成 + URL発行」を実行してください。
+        <br />先に「建物フォルダ作成 + URL発行」を実行してください。
       </div>
     );
   }
@@ -125,26 +128,18 @@ export default function BuildStatus({
   return (
     <div className="space-y-3">
       <div className="text-xs text-slate-600">
-        対象:{" "}
-        <span className="font-semibold">
-          {info.user || "-"} / {info.bldg || "-"}
-        </span>
+        対象: <span className="font-semibold">{info.user || "-"} / {info.bldg || "-"}</span>
       </div>
 
       {/* 進捗バー */}
       <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
         <div
           className="h-3 rounded-full transition-all duration-300"
-          style={{
-            width: `${displayPct}%`,
-            backgroundColor:
-              displayPct >= 100 ? "#16a34a" : "#2563eb",
-          }}
+          style={{ width: `${displayPct}%`, backgroundColor: displayPct >= 100 ? "#16a34a" : "#2563eb" }}
         />
       </div>
       <div className="text-xs text-slate-600">
-        進捗: <span className="font-semibold">{displayPct}%</span>
-        {loading && " （更新中…）"}
+        進捗: <span className="font-semibold">{displayPct}%</span>{loading && " （更新中…）"}
       </div>
 
       {err && (
@@ -157,23 +152,14 @@ export default function BuildStatus({
         <div className="space-y-2">
           <div className="text-xs text-slate-700">
             フォームURL:{" "}
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-600 underline"
-            >
+            <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 underline">
               {url}
             </a>
           </div>
           {qrImageUrl && (
             <div className="mt-2">
               <div className="text-xs text-slate-700 mb-1">QRコード</div>
-              <img
-                src={qrImageUrl}
-                alt="フォームURLのQRコード"
-                className="border border-slate-200 rounded-md bg-white p-1"
-              />
+              <img src={qrImageUrl} alt="フォームURLのQRコード" className="border border-slate-200 rounded-md bg-white p-1" />
             </div>
           )}
         </div>
