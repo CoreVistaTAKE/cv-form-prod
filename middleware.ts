@@ -4,18 +4,17 @@ import { NextResponse } from "next/server";
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // 公開動線は一切触らない（認証・rewrite しない）
+  // 公開動線は素通し（認証/書換え禁止）
   if (pathname.startsWith("/fill") || pathname.startsWith("/resolve") || pathname.startsWith("/api")) {
     return NextResponse.next();
   }
 
-  // 既存の社内ページ等に別処理があるならここで（必要時のみ）
   return NextResponse.next();
 }
 
+// ★キャプチャ無しの安全なパターン（Next公式例ベース）
+//  - _next/static と _next/image、favicon.ico を除外
+//  - あわせて api / fill / resolve も除外
 export const config = {
-  matcher: [
-    // 静的配下などを除外。/fill, /resolve, /api は除外して素通しにする
-    "/((?!api|_next|static|favicon.ico|fill|resolve|.*\\.(png|jpg|jpeg|svg|gif|ico)$).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api|fill|resolve).*)"],
 };
