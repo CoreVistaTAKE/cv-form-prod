@@ -1,3 +1,4 @@
+// app/fill/FillClient.tsx  ← 全文
 "use client";
 import React from "react";
 import { Wizard } from "@/components/Wizard";
@@ -6,104 +7,102 @@ import { useBuilderStore } from "@/store/builder";
 type Props = { user?: string; bldg?: string; host?: string };
 
 export default function FillClient({ user, bldg, host }: Props) {
+  // 直指定（URLクエリ）の場合は、まず schema をロードしてから Wizard を表示する
   const builder = useBuilderStore();
-
-  // ──────────────────────────────────────────────────────────────
-  // 直リンク（user & bldg あり）の場合：resolve → read → hydrate → Wizard
-  // ──────────────────────────────────────────────────────────────
-  const isDirect = !!user && !!bldg;
-  const [phase, setPhase] = React.useState<"idle"|"resolving"|"reading"|"ready"|"error">(isDirect ? "resolving" : "idle");
+  const [phase, setPhase] = React.useState<"idle"|"loading"|"done"|"error">("idle");
   const [err, setErr] = React.useState<string>("");
 
   React.useEffect(() => {
-    if (!isDirect) return;
+    let cancelled = false;
 
-    let aborted = false;
-    (async () => {
-      setErr("");
-      setPhase("resolving");
+    async function loadSchemaDirect(u: string, b: string, h: string) {
+      // 1) /api/forms/read を優先で叩く（varUser/varBldg 形式と user/bldg 形式の両対応）
+      async function tryRead(body: any) {
+        const r = await fetch("/api/forms/read", {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(`/api/forms/read ${r.status} ${await r.text().catch(()=> "")}`);
+        const j = await r.json().catch(()=> ({}));
+        return j;
+      }
+
+      function pickSchema(payload: any) {
+        const s = payload?.schema || payload?.body?.schema || (payload?.meta && payload?.pages && payload?.fields ? payload : null);
+        return s || null;
+      }
+
+      // まず /api/forms/read に 2パターンで挑戦
+      let schema: any = null;
       try {
-        // 1) schemaPath を解決
+        const j1 = await tryRead({ varUser: u, varBldg: b, varHost: h });
+        schema = pickSchema(j1);
+      } catch {}
+      if (!schema) {
+        try {
+          const j2 = await tryRead({ user: u, bldg: b, host: h });
+          schema = pickSchema(j2);
+        } catch {}
+      }
+
+      // だめなら /api/forms/resolve → schemaPath → /api/forms/read で最終取得
+      if (!schema) {
         const r1 = await fetch("/api/forms/resolve", {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify({ varUser: user, varBldg: bldg, varHost: host }),
-          cache: "no-store",
+          body: JSON.stringify({ varUser: u, varBldg: b, varHost: h }),
         });
-        if (!r1.ok) {
-          const t = await r1.text().catch(() => "");
-          throw new Error(`resolve HTTP ${r1.status} ${t}`);
-        }
-        const j1 = await r1.json().catch(() => ({} as any));
-        const schemaPath: string =
-          j1?.schemaPath ||
-          j1?.body?.schemaPath ||
-          j1?.result?.schemaPath ||
-          "";
+        if (!r1.ok) throw new Error(`/api/forms/resolve ${r1.status} ${await r1.text().catch(()=> "")}`);
+        const j1 = await r1.json().catch(()=> ({}));
+        const schemaPath =
+          j1?.schemaPath || j1?.body?.schemaPath || j1?.result?.schemaPath;
+        if (!schemaPath) throw new Error("schemaPath が取得できませんでした。");
 
-        if (!schemaPath) {
-          // URLだけ来る実装も許容（将来拡張）。今回はschemaPathが必須。
-          throw new Error("schemaPath が取得できません。Flow の status.json に schemaPath を出力してください。");
-        }
-
-        // 2) JSON を取得
-        setPhase("reading");
         const r2 = await fetch("/api/forms/read", {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
           body: JSON.stringify({ schemaPath }),
-          cache: "no-store",
         });
-        if (!r2.ok) {
-          const t = await r2.text().catch(() => "");
-          throw new Error(`read HTTP ${r2.status} ${t}`);
-        }
-        const schema = await r2.json();
+        if (!r2.ok) throw new Error(`/api/forms/read (by schemaPath) ${r2.status} ${await r2.text().catch(()=> "")}`);
+        const j2 = await r2.json().catch(()=> ({}));
+        schema = pickSchema(j2);
+      }
 
-        // 3) ストアへ注入
-        if (!aborted) {
-          builder.hydrateFrom(schema); // 既存のユーザービルダーでも使用中の安全な注入関数
-          setPhase("ready");
+      if (!schema) throw new Error("フォーム定義（meta/pages/fields）が空です。");
+
+      // ストアに流し込み（既存パターンに合わせる）
+      try { builder.resetAll?.(); } catch {}
+      builder.hydrateFrom?.(schema);
+      if (!schema?.meta?.fixedBuilding && builder.setMeta) {
+        builder.setMeta({ fixedBuilding: b });
+      }
+    }
+
+    (async () => {
+      if (user && bldg) {
+        setPhase("loading");
+        setErr("");
+        try {
+          await loadSchemaDirect(user, bldg, host || "");
+          if (!cancelled) setPhase("done");
+        } catch (e: any) {
+          if (!cancelled) { setPhase("error"); setErr(e?.message || String(e)); }
         }
-      } catch (e: any) {
-        if (aborted) return;
-        setErr(e?.message || String(e));
-        setPhase("error");
       }
     })();
 
-    return () => { aborted = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirect, user, bldg, host]);
+    return () => { cancelled = true; };
+  }, [user, bldg, host, builder]);
 
-  if (isDirect) {
-    if (phase === "resolving") {
-      return <div className="card"><div className="form-text">フォームを探しています…（resolve）</div></div>;
-    }
-    if (phase === "reading") {
-      return <div className="card"><div className="form-text">フォーム定義を読み込んでいます…（read）</div></div>;
-    }
-    if (phase === "error") {
-      return (
-        <div className="card">
-          <div className="form-title">読み込みエラー</div>
-          <div className="form-text" style={{whiteSpace:"pre-wrap"}}>{err || "unknown error"}</div>
-          <div className="form-text" style={{marginTop:8, opacity:.8}}>
-            ※ /api/forms/resolve → /api/forms/read の順で失敗箇所を特定してください。
-          </div>
-        </div>
-      );
-    }
-    // 読み込み完了
-    if (phase === "ready") {
-      return <Wizard />;
-    }
-    return null;
+  // 直指定は最短表示（ロード→Wizard）。それ以外は既存UI。
+  if (user && bldg) {
+    if (phase === "loading") return <div className="card">フォーム定義を読込中…</div>;
+    if (phase === "error")   return <div className="card text-red-600 whitespace-pre-wrap">読み込み失敗: {err}</div>;
+    if (phase === "done")    return <Wizard />;
   }
 
-  // ──────────────────────────────────────────────────────────────
-  // 直リンク以外：既存のローカル選択UI（そのまま温存）
-  // ──────────────────────────────────────────────────────────────
+  // ===== 直指定が無い時の既存UI（localStorageで建物選択→iframe） =====
   const [pickedBldg, setPickedBldg] = React.useState("");
   const [formUrl, setFormUrl] = React.useState("");
 
@@ -166,8 +165,7 @@ export default function FillClient({ user, bldg, host }: Props) {
         </div>
       ) : (
         <div style={{ padding: 8, border: "1px dashed #CBD5E1", borderRadius: 8, color: "#334155" }}>
-          直近の建物が見つかりません。まず「ユーザー用ビルダー → 建物フォルダ作成」で建物を作成し、
-          「プレビュー」で完成フォームがあることを確認してください。
+          直近の建物が見つかりません。まず「ユーザー用ビルダー → 建物フォルダ作成」で建物を作成し、「プレビュー」で完成フォームがあることを確認してください。
         </div>
       )}
     </div>
