@@ -1,5 +1,5 @@
-// app/user-builder/_components/BuildingFolderPanel.tsx
 "use client";
+
 import React, { useCallback, useMemo, useState } from "react";
 import BuildStatus from "./BuildStatus.client";
 
@@ -21,15 +21,31 @@ type Props = {
 };
 
 const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "form_PJ1";
-const ENV_DEFAULT_HOST = process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp";
+const ENV_DEFAULT_HOST =
+  process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp";
 
 function required(url: string, name: string) {
   if (!url) throw new Error(`${name} が未設定です。.env.local に ${name} を定義してください。`);
 }
 
-export default function BuildingFolderPanel({ createUrl, statusUrl, defaultUser, defaultHost }: Props) {
-  const FLOW_CREATE_URL = createUrl || "";
+function upsertRegistry(entry: { bldg: string; statusPath: string; url?: string }) {
+  try {
+    const raw = localStorage.getItem("cv_registry") || "[]";
+    const arr: any[] = JSON.parse(raw);
+    const i = arr.findIndex((x) => x && x.statusPath === entry.statusPath);
+    if (i >= 0) arr[i] = { ...arr[i], ...entry };
+    else arr.push(entry);
+    localStorage.setItem("cv_registry", JSON.stringify(arr));
+  } catch {}
+}
 
+export default function BuildingFolderPanel({
+  createUrl,
+  statusUrl,
+  defaultUser,
+  defaultHost,
+}: Props) {
+  const FLOW_CREATE_URL = createUrl || "";
   const [user] = useState<string>(defaultUser || ENV_DEFAULT_USER);
   const [host] = useState<string>(defaultHost || ENV_DEFAULT_HOST);
   const [bldg, setBldg] = useState<string>("");
@@ -52,28 +68,12 @@ export default function BuildingFolderPanel({ createUrl, statusUrl, defaultUser,
       if (!bldg.trim()) throw new Error("建物名は必須です。");
       required(FLOW_CREATE_URL, "FLOW_CREATE_FORM_FOLDER_URL");
 
-      // 除外/テーマはローカルから収集して Flow に渡す
-      let excludedPages: string[] = [];
-      let excludedFields: string[] = [];
-      let theme = "";
-      try {
-        excludedPages = JSON.parse(localStorage.getItem("cv_excluded_pages") || "[]");
-        excludedFields = JSON.parse(localStorage.getItem("cv_excluded_fields") || "[]");
-        theme = localStorage.getItem("cv_theme") || "";
-      } catch {}
-
       setRunning(true);
+
       const res = await fetch(FLOW_CREATE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify({
-          varUser: user,
-          varBldg: bldg.trim(),
-          varHost: host,
-          varExcludedPages: excludedPages,
-          varExcludedFields: excludedFields,
-          varTheme: theme,
-        }),
+        body: JSON.stringify({ varUser: user, varBldg: bldg.trim(), varHost: host }),
       });
 
       if (!res.ok) {
@@ -84,16 +84,23 @@ export default function BuildingFolderPanel({ createUrl, statusUrl, defaultUser,
       const json: CreateRes = await res.json().catch(() => ({}));
       const tkn = json.token || (json.user && json.seq ? `${json.user}_${json.seq}_${bldg.trim()}` : undefined);
       const stPath = json.statusPath;
-      if (!tkn || !stPath) throw new Error("Flow 応答に token / statusPath がありません。");
+
+      if (!tkn || !stPath) {
+        throw new Error("Flow の応答に token または statusPath が含まれていません。CreateFormFolder の Response を確認してください。");
+      }
 
       setTraceId(json.traceId);
       setToken(tkn);
       setStatusPath(stPath);
 
+      // lastBuild は従来通り
       try {
         const last = { user, bldg: bldg.trim(), statusPath: stPath };
         localStorage.setItem("cv:lastBuild", JSON.stringify(last));
       } catch {}
+
+      // ★ 新規：レジストリへ登録（url は後で BuildStatus が埋める）
+      upsertRegistry({ bldg: bldg.trim(), statusPath: stPath });
     } catch (e: any) {
       setError(e?.message || String(e));
     } finally {
@@ -123,7 +130,10 @@ export default function BuildingFolderPanel({ createUrl, statusUrl, defaultUser,
           <div className="form-text text-[11px] text-slate-500">traceId: {traceId || "-"}</div>
           <div className="form-text text-xs">フォルダ名: {token}</div>
           <div className="form-text text-[11px] text-slate-500">statusPath: {statusPath}</div>
-          <div className="mt-3"><BuildStatus statusUrl={statusUrl} /></div>
+
+          <div className="mt-3">
+            <BuildStatus user={user} bldg={bldg.trim()} statusPath={statusPath} statusUrl={statusUrl} justTriggered={true} />
+          </div>
         </div>
       )}
     </div>
