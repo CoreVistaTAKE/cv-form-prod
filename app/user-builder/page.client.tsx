@@ -10,6 +10,5 @@ type Props = {
 };
 
 export default function UserBuilderClient(props: Props) {
-  // 余計な処理はここでしない。すべて UserBuilderPanels に委譲する
   return <UserBuilderPanels {...props} />;
 }
