@@ -1,4 +1,12 @@
 export const CHANGELOG = [
+{
+    version: "v0.70",
+    date: "2025-11-20",
+    items: [
+      "フォーム直指定モード: form_base_<bldg>_<seq>.json から Wizard を描画",
+      "Flow: status.json に schemaPath を保存し /api/forms/read で参照"
+    ],
+  },
   {
     version: "v0.60",
     date: "2025-11-10",

@@ -6,7 +6,6 @@ app
 components
 data
 node_modules
-pages
 public
 scripts
 store
@@ -22,6 +21,7 @@ utils
 {
 ac.abort()
 CHANGELOG.md
+env_keys.txt
 flow_test_log.json
 heroku_push.log
 middleware.prod.ts
@@ -127,8 +127,6 @@ components\PageCanvas.tsx
 components\PagesSidebar.tsx
 components\Wizard.tsx
 data\changelog.ts
-pages\api
-pages\api\builder
 public\favicon.ico
 scripts\Env-Doctor.ps1
 scripts\patch_add_builder_ui.ps1
