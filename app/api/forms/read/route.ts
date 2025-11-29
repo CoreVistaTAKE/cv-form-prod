@@ -1,218 +1,147 @@
 // app/api/forms/read/route.ts
-export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 
-const FLOW_GET_BUILD_STATUS_URL = process.env.FLOW_GET_BUILD_STATUS_URL!;
-const FLOW_SAVE_FILES_URL = process.env.FLOW_SAVE_FILES_URL!; // このフローに「op=read, path」の分岐を必ず用意
+const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
 
-async function postJson<T>(url: string, body: any, timeoutMs = 20000): Promise<T> {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+export const dynamic = "force-dynamic";
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-      cache: "no-store",
-    });
-
-    const txt = await res.text();
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${txt}`);
-    }
-
-    try {
-      return JSON.parse(txt) as T;
-    } catch {
-      // Flow 側が text を返すケースもあるので、そのまま any で返す
-      return txt as any as T;
-    }
-  } finally {
-    clearTimeout(id);
-  }
-}
-
-type StatusRes = {
-  url?: string;
-  qrPath?: string;
-  schemaPath?: string;
-  pct?: number;
-  ok?: boolean;
-  body?: any;
-  result?: any;
+type Body = {
+  varUser?: string;
+  varBldg?: string;
 };
 
 export async function POST(req: Request) {
-  try {
-    const raw = await req.json().catch(() => ({} as any));
-
-    const {
-      // 1) ユーザービルダーからの読み込み用（schemaPath 直指定）
-      schemaPath: bodySchemaPath,
-      path,
-      token,
-
-      // 2) /fill?user=&bldg= からの呼び出し用
-      varUser,
-      varBldg,
-      statusPath,
-      user,
-      bldg,
-    } = raw ?? {};
-
-    // ==========================
-    // 1) schemaPath / path 直指定モード
-    //    - UserBuilderPanels.tsx からの呼び出し:
-    //      body: { schemaPath, token }
-    // ==========================
-    const schemaPath =
-      (typeof bodySchemaPath === "string" && bodySchemaPath.trim()) ||
-      (typeof path === "string" && path.trim()) ||
-      "";
-
-    if (schemaPath) {
-      if (!FLOW_SAVE_FILES_URL) {
-        return NextResponse.json(
-          { ok: false, reason: "FLOW_SAVE_FILES_URL 未設定（read 分岐必須）" },
-          { status: 500 }
-        );
-      }
-
-      // Flow 側: { op: "read", path, token? } → 対象 JSON の中身を text で返す想定
-      const fileRes: any = await postJson<any>(FLOW_SAVE_FILES_URL, {
-        op: "read",
-        path: schemaPath,
-        token,
-      });
-
-      const text =
-        typeof fileRes === "string"
-          ? fileRes
-          : fileRes?.text || fileRes?.body?.text || fileRes?.content || "";
-
-      if (!String(text).trim()) {
-        return NextResponse.json(
-          {
-            ok: false,
-            reason: "フォーム JSON の内容が取得できませんでした（SaveFiles フローの read 分岐を確認）",
-          },
-          { status: 502 }
-        );
-      }
-
-      const parsed = JSON.parse(text);
-      const payload: any = { ...parsed };
-
-      // 旧バージョン互換: schema プロパティにも同じ内容を入れておく
-      if (payload && typeof payload === "object" && !("schema" in payload)) {
-        payload.schema = parsed;
-      }
-
-      return NextResponse.json(payload);
-    }
-
-    // ==========================
-    // 2) user / bldg から status.json を辿るモード
-    //    - FillClient.tsx からの呼び出し:
-    //      body: { user, bldg, host }
-    //    - 旧バージョン互換:
-    //      body: { varUser, varBldg, statusPath }
-    // ==========================
-    const userStr = String(varUser ?? user ?? "").trim();
-    const bldgStr = String(varBldg ?? bldg ?? "").trim();
-
-    if (!userStr || !bldgStr) {
-      return NextResponse.json(
-        { ok: false, reason: "schemaPath か user/bldg のいずれかは必須です" },
-        { status: 400 }
-      );
-    }
-
-    if (!FLOW_GET_BUILD_STATUS_URL) {
-      return NextResponse.json(
-        { ok: false, reason: "FLOW_GET_BUILD_STATUS_URL 未設定" },
-        { status: 500 }
-      );
-    }
-    if (!FLOW_SAVE_FILES_URL) {
-      return NextResponse.json(
-        { ok: false, reason: "FLOW_SAVE_FILES_URL 未設定（read 分岐必須）" },
-        { status: 500 }
-      );
-    }
-
-    // status.json の取得（statusPath が無い場合も Flow 側で解決できる前提）
-    const st = await postJson<StatusRes>(FLOW_GET_BUILD_STATUS_URL, {
-      varUser: userStr,
-      varBldg: bldgStr,
-      statusPath,
-    });
-
-    const schemaPathFromStatus =
-      st?.schemaPath ||
-      st?.body?.schemaPath ||
-      st?.result?.schemaPath ||
-      "";
-
-    if (!schemaPathFromStatus) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: "schemaPath が見つかりません（status.json の出力/フローを確認）",
-        },
-        { status: 502 }
-      );
-    }
-
-    // OneDrive(SharePoint) の該当 JSON を Flow 経由で読み取り
-    // Flow 側：パラメータ { op: "read", path: schemaPathFromStatus } → Get file content → Response raw text
-    const fileRes: any = await postJson<any>(FLOW_SAVE_FILES_URL, {
-      op: "read",
-      path: schemaPathFromStatus,
-    });
-
-    const text =
-      typeof fileRes === "string"
-        ? fileRes
-        : fileRes?.text || fileRes?.body?.text || fileRes?.content || "";
-
-    if (!String(text).trim()) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: "フォーム JSON の内容が取得できませんでした（SaveFiles フローの read 分岐を確認）",
-        },
-        { status: 502 }
-      );
-    }
-
-    const parsed = JSON.parse(text);
-    const payload: any = { ...parsed };
-
-    // 旧バージョン互換: schema プロパティにも同じ内容を入れておく
-    if (payload && typeof payload === "object" && !("schema" in payload)) {
-      payload.schema = parsed;
-    }
-
-    // /fill 用に最低限のメタだけ _source に付ける（UI 側は meta/pages/fields だけを素直に使う想定）
-    payload._source = {
-      user: userStr,
-      bldg: bldgStr,
-      schemaPath: schemaPathFromStatus,
-      url:
-        st?.url ||
-        st?.body?.url ||
-        st?.result?.url ||
-        "",
-    };
-
-    return NextResponse.json(payload);
-  } catch (e: any) {
+  if (!FORM_BASE_ROOT) {
     return NextResponse.json(
-      { ok: false, reason: e?.message || "unexpected error" },
-      { status: 500 }
+      {
+        ok: false,
+        reason: "FORM_BASE_ROOT が未設定です。.env.local を確認してください。",
+      },
+      { status: 500 },
+    );
+  }
+
+  try {
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const user = (body.varUser || "").trim();
+    const bldg = (body.varBldg || "").trim();
+
+    if (!user) {
+      return NextResponse.json(
+        { ok: false, reason: "varUser が空です。" },
+        { status: 400 },
+      );
+    }
+    if (!bldg) {
+      return NextResponse.json(
+        { ok: false, reason: "varBldg が空です。" },
+        { status: 400 },
+      );
+    }
+
+    const userRoot = path.join(FORM_BASE_ROOT, user);
+    if (!fs.existsSync(userRoot)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: `ファイル/フォルダが見つかりませんでした: ${userRoot}`,
+        },
+        { status: 500 },
+      );
+    }
+
+    // ===== 建物フォルダ候補を列挙 =====
+    const candidates: { folder: string; formDir: string }[] = [];
+
+    // 1) そのまま user/bldg/form というフォルダがあるか
+    const directFolder = path.join(userRoot, bldg);
+    const directFormDir = path.join(directFolder, "form");
+    if (fs.existsSync(directFormDir)) {
+      candidates.push({ folder: directFolder, formDir: directFormDir });
+    }
+
+    // 2) user 配下で「末尾が _建物名」のフォルダも候補にする
+    //    例: form_PJ1_0001_テストA
+    const entries = fs.readdirSync(userRoot, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const name = ent.name;
+      if (name === "BaseSystem") continue;
+
+      if (name === bldg || name.endsWith("_" + bldg)) {
+        const formDir = path.join(userRoot, name, "form");
+        if (fs.existsSync(formDir)) {
+          candidates.push({
+            folder: path.join(userRoot, name),
+            formDir,
+          });
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: `ファイル/フォルダが見つかりませんでした: ${directFormDir}`,
+        },
+        { status: 500 },
+      );
+    }
+
+    // フォルダ名の辞書順で「一番後ろ」（＝Seq が一番大きい想定）を採用
+    candidates.sort((a, b) =>
+      a.folder.localeCompare(b.folder, "ja"),
+    );
+    const picked = candidates[candidates.length - 1];
+
+    // ===== form_base*.json を探す =====
+    const files = fs.readdirSync(picked.formDir);
+    const jsonFiles = files.filter(
+      (name) =>
+        name.toLowerCase().startsWith("form_base") &&
+        name.toLowerCase().endsWith(".json"),
+    );
+
+    if (jsonFiles.length === 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: `ファイル/フォルダが見つかりませんでした: ${path.join(
+            picked.formDir,
+            "form_base*.json",
+          )}`,
+        },
+        { status: 500 },
+      );
+    }
+
+    // ファイル名の辞書順で最後のものを「最新」とみなす
+    jsonFiles.sort();
+    const jsonName = jsonFiles[jsonFiles.length - 1];
+    const jsonPath = path.join(picked.formDir, jsonName);
+
+    const content = fs.readFileSync(jsonPath, "utf8");
+    const schema = JSON.parse(content);
+
+    return NextResponse.json(
+      {
+        ok: true,
+        schema,
+        folder: picked.folder,
+        jsonPath,
+      },
+      { status: 200 },
+    );
+  } catch (err: any) {
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: err?.message || String(err),
+      },
+      { status: 500 },
     );
   }
 }

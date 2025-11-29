@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { nanoid } from "nanoid";
 import type { Theme } from "@/utils/theme";
+import type { ResponseItem } from "@/store/responses";
 
 export type FieldType =
   | "forminfo"
@@ -69,6 +70,12 @@ export interface FormMeta {
    */
   excludePages?: string[];
   excludeFields?: string[];
+
+  /**
+   * Excel「回答」シートから読み込んだ直近1件の回答。
+   * /api/forms/previous → FillClient → hydrateFrom(meta) で注入する。
+   */
+  previousFromExcel?: ResponseItem | null;
 }
 
 interface State {
@@ -107,6 +114,7 @@ const defaultMeta: FormMeta = {
   // contentBg は任意。必要ならここで既定色を指定してもよい（例：contentBg: "#0b0f1a"）
   excludePages: [],
   excludeFields: [],
+  previousFromExcel: null,
 };
 
 function ensureSystemPages(pages: Page[]): Page[] {

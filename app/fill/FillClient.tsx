@@ -1,252 +1,215 @@
+// app/fill/FillClient.tsx
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Wizard } from "@/components/Wizard";
 import { useBuilderStore } from "@/store/builder";
+import type { FormMeta, Page, Field } from "@/store/builder";
 
 type Props = {
-  /** URL クエリから渡ってくる値 */
-  user?: string;
-  bldg?: string;
-  host?: string;
+  user: string;
+  bldg: string;
+  seq: string; // 3桁の Sseq
+  host: string;
 };
 
-/**
- * 挙動
- * - user & bldg がある   → 建物用フォームを /api/forms/read 経由で読み込み、Wizard を描画
- * - user or bldg が無い → 既存の「建物を選んで埋め込み」UIをそのまま利用
- */
-export default function FillClient({ user, bldg, host }: Props) {
-  const builder = useBuilderStore();
+type LoadState =
+  | { phase: "init" }
+  | { phase: "loading"; message: string }
+  | { phase: "ready" }
+  | { phase: "error"; message: string; detail?: string };
 
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [hydrated, setHydrated] = React.useState(false);
+export default function FillClient({ user, bldg, seq, host }: Props) {
+  const hydrateFrom = useBuilderStore((s) => s.hydrateFrom);
+  const [state, setState] = useState<LoadState>({ phase: "init" });
 
-  // builder store は必ず 1 回初期化
-  React.useEffect(() => {
-    if (typeof builder.initOnce === "function") {
-      builder.initOnce();
+  // 常に 3 桁に揃えた Seq を使う
+  const normalizedSeq = (seq || "001").toString().padStart(3, "0");
+
+  useEffect(() => {
+    // URL に user / bldg が無いケースは即エラー
+    if (!user || !bldg) {
+      setState({
+        phase: "error",
+        message: "URL に user と bldg が指定されていません。",
+      });
+      return;
     }
-  }, [builder]);
 
-  // ==== 直指定モード（/fill?user=&bldg=） ====
-  React.useEffect(() => {
-    if (!user || !bldg) return;
-
-    let cancelled = false;
+    const controller = new AbortController();
 
     const run = async () => {
-      setLoading(true);
-      setError(null);
-      setHydrated(false);
+      setState({
+        phase: "loading",
+        message: "フォーム定義を読み込んでいます…",
+      });
 
       try {
+        // --- 1) フォーム定義を取得 ---
         const res = await fetch("/api/forms/read", {
           method: "POST",
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify({ user, bldg, host }),
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            // FS ルート用
+            varUser: user,
+            varBldg: bldg,
+            varSeq: normalizedSeq,
+            // 旧 Flow ルート互換用
+            user,
+            bldg,
+            seq: normalizedSeq,
+            host,
+          }),
+          signal: controller.signal,
         });
 
         const text = await res.text();
         if (!res.ok) {
-          throw new Error(`read HTTP ${res.status} ${text}`);
+          throw new Error(`read HTTP ${res.status}: ${text}`);
         }
 
-        let payload: any;
+        let payload: any = {};
         try {
-          payload = JSON.parse(text);
-        } catch {
-          throw new Error("フォーム定義(JSON)の読み込みに失敗しました。");
+          payload = text ? JSON.parse(text) : {};
+        } catch (e) {
+          throw new Error("フォーム定義 JSON の parse に失敗しました。");
         }
 
-        if (!payload || typeof payload !== "object") {
-          throw new Error("フォーム定義が空です。");
+        // --- レスポンス形式のパターン吸収 ---
+        let schema: { meta: FormMeta; pages: Page[]; fields: Field[] };
+
+        // ① いまの FS ルート: { ok:true, schema:{meta,pages,fields} }
+        if (payload?.ok && payload.schema) {
+          schema = payload.schema;
+
+          // ② 旧 Flow ルート: { ok:true, data:{schema:{...}} }
+        } else if (payload?.ok && payload.data?.schema) {
+          schema = payload.data.schema;
+
+          // ③ スキーマ本体そのまま: {meta,pages,fields}
+        } else if (
+          payload?.meta &&
+          Array.isArray(payload.pages) &&
+          Array.isArray(payload.fields)
+        ) {
+          schema = payload;
+        } else {
+          throw new Error(
+            "read API から想定外の形式のレスポンスが返ってきました。"
+          );
         }
 
-        if (typeof builder.hydrateFrom === "function") {
-          builder.hydrateFrom(payload);
+        // --- 2) Excel の前回回答を取得 (/api/forms/previous) ---
+        let previousFromExcel: any = null;
+        try {
+          const prevRes = await fetch("/api/forms/previous", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              varUser: user,
+              varBldg: bldg,
+              varSeq: normalizedSeq,
+            }),
+            signal: controller.signal,
+          });
+
+          if (prevRes.ok) {
+            const prevJson = await prevRes.json();
+            if (prevJson?.ok && prevJson.item) {
+              previousFromExcel = prevJson.item;
+            }
+          } else {
+            console.warn(
+              `[FillClient] previous HTTP ${prevRes.status} ${await prevRes
+                .text()
+                .catch(() => "")}`
+            );
+          }
+        } catch (e: any) {
+          if (e?.name === "AbortError") {
+            console.log("[FillClient] previous fetch aborted (ignored in dev)", e);
+          } else {
+            console.warn("[FillClient] previous fetch error", e);
+          }
         }
 
-        if (!cancelled) {
-          setHydrated(true);
+        const schemaWithPrev =
+          previousFromExcel != null
+            ? {
+                ...schema,
+                meta: {
+                  ...(schema.meta || {}),
+                  previousFromExcel,
+                },
+              }
+            : schema;
+
+        // Zustand の builder ストアに流し込む
+        hydrateFrom(schemaWithPrev);
+
+        setState({ phase: "ready" });
+      } catch (err: any) {
+        if (err?.name === "AbortError") {
+          console.log("[FillClient] read aborted (ignored in dev)", err);
+          return;
         }
-      } catch (e: any) {
-        console.error(e);
-        if (!cancelled) {
-          setError(e?.message || String(e));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        console.error("[FillClient] read error", err);
+        setState({
+          phase: "error",
+          message: err?.message || String(err),
+          detail: typeof err?.stack === "string" ? err.stack : undefined,
+        });
       }
     };
 
     run();
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [user, bldg, host, builder]);
+  }, [user, bldg, normalizedSeq, host, hydrateFrom]);
 
-  // ---- 直指定時の表示 ----
-  if (user && bldg) {
-    const title =
-      (builder.meta && (builder.meta as any).title) || "フォームを読み込み中…";
+  // ---- 描画部分 ----
 
+  if (state.phase === "loading" || state.phase === "init") {
     return (
-      <div style={{ display: "grid", gap: 12 }}>
-        <div className="card">
-          <div className="form-title">{title}</div>
-          <div className="form-text" style={{ opacity: 0.9 }}>
-            ユーザー: {user} ／ 建物: {bldg}
-          </div>
-
-          {loading && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>
-              建物用フォームを読み込んでいます…
-            </div>
-          )}
-
-          {error && (
-            <div
-              style={{
-                marginTop: 8,
-                fontSize: 12,
-                color: "#b91c1c",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              フォーム定義の取得に失敗しました:
-              <br />
-              {error}
-            </div>
-          )}
+      <div className="card">
+        <div className="form-title">フォーム読込中</div>
+        <div className="form-text" style={{ opacity: 0.9 }}>
+          {state.phase === "loading"
+            ? state.message
+            : "初期化しています…"}
         </div>
-
-        {/* フォーム定義が builder に入ったら Wizard を描画 */}
-        {!error && hydrated && <Wizard />}
+        <div className="form-text mt-2" style={{ fontSize: 12 }}>
+          user: {user} / bldg: {bldg} / seq: {normalizedSeq}
+        </div>
       </div>
     );
   }
 
-  // ==== ここから下は「既存の建物選択 UI」をそのまま維持 ====
-
-  const [pickedBldg, setPickedBldg] = React.useState("");
-  const [formUrl, setFormUrl] = React.useState("");
-
-  const options = React.useMemo<string[]>(() => {
-    try {
-      const raw = localStorage.getItem("cv_building_options") || "[]";
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? (arr as string[]) : [];
-    } catch {
-      return [];
-    }
-  }, []);
-
-  const urlMap = React.useMemo<Record<string, string>>(() => {
-    try {
-      const raw = localStorage.getItem("cv_form_urls") || "{}";
-      const obj = JSON.parse(raw);
-      return obj && typeof obj === "object"
-        ? (obj as Record<string, string>)
-        : {};
-    } catch {
-      return {};
-    }
-  }, []);
-
-  React.useEffect(() => {
-    try {
-      const last = localStorage.getItem("cv_last_building") || "";
-      const init = last || (options.length ? options[0] : "");
-      setPickedBldg(init);
-      setFormUrl(init ? urlMap[init] || "" : "");
-    } catch {
-      // ignore
-    }
-  }, [options, urlMap]);
-
-  React.useEffect(() => {
-    setFormUrl(pickedBldg ? urlMap[pickedBldg] || "" : "");
-  }, [pickedBldg, urlMap]);
-
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
-        <label>
-          建物：
-          <select
-            value={pickedBldg}
-            onChange={(e) => setPickedBldg(e.target.value)}
-            style={{
-              marginLeft: 8,
-              padding: "6px 10px",
-              border: "1px solid #E5E7EB",
-              borderRadius: 6,
-            }}
-          >
-            {options.length === 0 ? (
-              <option value="">（建物がありません）</option>
-            ) : (
-              options.map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))
-            )}
-          </select>
-        </label>
-        {formUrl && (
-          <a
-            className="btn"
-            href={formUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{ textDecoration: "none" }}
-          >
-            この建物のフォームを新しいタブで開く
-          </a>
+  if (state.phase === "error") {
+    return (
+      <div className="card">
+        <div className="form-title" style={{ color: "#fecaca" }}>
+          読み込みエラー
+        </div>
+        <div className="form-text" style={{ whiteSpace: "pre-wrap" }}>
+          {state.message}
+        </div>
+        {state.detail && (
+          <details style={{ marginTop: 8, fontSize: 11 }}>
+            <summary>詳細スタック</summary>
+            <pre style={{ whiteSpace: "pre-wrap" }}>
+              {state.detail}
+            </pre>
+          </details>
         )}
       </div>
+    );
+  }
 
-      {formUrl ? (
-        <div
-          style={{
-            border: "1px solid #E5E7EB",
-            borderRadius: 8,
-            overflow: "hidden",
-            height: "70vh",
-          }}
-        >
-          <iframe
-            src={formUrl}
-            style={{ width: "100%", height: "100%", border: 0 }}
-            title="building-form"
-          />
-        </div>
-      ) : (
-        <div
-          style={{
-            padding: 8,
-            border: "1px dashed #CBD5E1",
-            borderRadius: 8,
-            color: "#334155",
-          }}
-        >
-          直近の建物が見つかりません。まず「ユーザー用ビルダー → 建物フォルダ作成」で建物を作成し、
-          「プレビュー」で完成フォームがあることを確認してください。
-        </div>
-      )}
-    </div>
-  );
+  // phase === "ready"
+  return <Wizard user={user} bldg={bldg} seq={normalizedSeq} />;
 }
