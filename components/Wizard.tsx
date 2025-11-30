@@ -1,11 +1,13 @@
 // components/Wizard.tsx
 "use client";
+
 import React, { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useBuilderStore } from "@/store/builder";
 import { useResponsesStore } from "@/store/responses";
 import { toYYYYMMDD, isoDateTokyo, fromISODateStringJST } from "@/utils/date";
 import { applyTheme } from "@/utils/theme";
+import SubmitProgress from "@/app/fill/_components/SubmitProgress";
 
 const RESERVED = new Set([
   "点検日",
@@ -35,7 +37,7 @@ export function Wizard(props: WizardProps) {
   const [revisePrevItem, setRevisePrevItem] = useState<any | undefined>(undefined);
   const [isFromRevise, setIsFromRevise] = useState(false);
   const [working, setWorking] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState<string>("");
+  const [reportUrl, setReportUrl] = useState<string | undefined>();
 
   const form = useForm({ shouldUnregister: false });
   const register = form.register as any;
@@ -44,10 +46,7 @@ export function Wizard(props: WizardProps) {
   const watch = form.watch;
 
   const infoIndex = useMemo(() => pages.findIndex((p) => p.type === "info"), [pages]);
-  const reviseIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "revise"),
-    [pages],
-  );
+  const reviseIndex = useMemo(() => pages.findIndex((p) => p.type === "revise"), [pages]);
   const reviseListIndex = useMemo(
     () => pages.findIndex((p) => p.type === "reviseList"),
     [pages],
@@ -141,7 +140,7 @@ export function Wizard(props: WizardProps) {
     return true;
   }
 
-  // ▼ ナビ（重複定義しない）
+  // ▼ ナビ
   const TopNav = ({ left, right }: { left: () => void; right: () => void }) => (
     <div className="flex items-center justify-between mb-2">
       <button className="btn-blue-light btn-nav" onClick={left}>
@@ -163,7 +162,6 @@ export function Wizard(props: WizardProps) {
     setValue("会社名", meta.fixedCompany || item.company || "");
     setValue("建物名", meta.fixedBuilding || item.building || "");
     setValue("点検者名", item.inspector || "");
-    // グループIDは存在する場合のみ復元（数値正規化）。存在しなければ触らない。
     if (fields.some((f) => f.label === "【2名以上の点検】共同報告グループID")) {
       setValue(
         "【2名以上の点検】共同報告グループID",
@@ -182,7 +180,8 @@ export function Wizard(props: WizardProps) {
     else if (basicIndex >= 0) setIdx(basicIndex);
   }
 
-    async function saveCurrent(submit: boolean) {
+  // ▼ 送信 & Flow 呼び出し
+  async function saveCurrent(submit: boolean) {
     const vals = form.getValues();
 
     const building = (meta.fixedBuilding || vals["建物名"] || "").trim();
@@ -197,7 +196,6 @@ export function Wizard(props: WizardProps) {
     const sheet = (vals["ReportSheet（タブ名）"] || "").trim();
     const inspector = (vals["点検者名"] || "").trim();
 
-    // グループID（任意）
     const hasGroup = fields.some(
       (f) => f.label === "【2名以上の点検】共同報告グループID",
     );
@@ -213,10 +211,9 @@ export function Wizard(props: WizardProps) {
       return;
     }
 
-    // 全入力値 → values オブジェクト（ラベル → 値）
     const values: Record<string, string> = {};
     for (const f of fields) {
-      if (f.type === "forminfo") continue;
+      if ((f as any).type === "forminfo") continue;
       const v = vals[f.label];
       if (v !== undefined && v !== null) {
         const s = String(v);
@@ -224,7 +221,6 @@ export function Wizard(props: WizardProps) {
       }
     }
 
-    // Flow 用 answers 配列（MAP & 回答タブ用）
     const answers = Object.entries(values).map(([key, value]) => ({
       key,
       value: value == null ? "" : String(value),
@@ -253,16 +249,16 @@ export function Wizard(props: WizardProps) {
       });
     }
 
-    // ここから「送信ボタン」押下時の処理
+    // === 「報告書作成」ボタン押下時の処理 ===
     if (submit && completeIndex >= 0) {
-      setWorking(true);
+      // 完了ページへ遷移
       setIdx(completeIndex);
+      setWorking(true);
+      setReportUrl(undefined);
 
-      // ▼ Flow（AppendAnswerAndRunProcessFormSubmission）への送信
       if (user && bldg) {
         try {
           const payload = {
-            // Flow が見るメインのキー
             user,
             bldg,
             seq: normalizedSeq,
@@ -274,8 +270,7 @@ export function Wizard(props: WizardProps) {
             groupId,
             values,
             answers,
-
-            // 互換用の var〜 キー（フロー側の coalesce で拾えるようにしておく）
+            // Flow 側互換用
             varUser: user,
             varBldg: bldg,
             varSeq: normalizedSeq,
@@ -302,56 +297,60 @@ export function Wizard(props: WizardProps) {
             json = { raw: text };
           }
 
-          if (!res.ok || !json?.ok) {
+          if (!res.ok || json?.ok === false) {
             console.warn("[Wizard] submit flow error", res.status, json);
-            // 必要ならここで alert を出す
+          }
+
+          // Flow から reportUrl を返してもらえればここで拾う
+          let urlFromFlow: string | undefined =
+            json.reportUrl ||
+            json.report_url ||
+            json.fileUrl ||
+            json.file_url ||
+            json.url;
+
+          if (!urlFromFlow && json.data) {
+            urlFromFlow =
+              json.data.reportUrl ||
+              json.data.report_url ||
+              json.data.fileUrl ||
+              json.data.file_url ||
+              json.data.url;
+          }
+
+          if (typeof urlFromFlow === "string" && urlFromFlow.trim()) {
+            setReportUrl(urlFromFlow.trim());
           }
         } catch (e) {
           console.warn("[Wizard] submit flow fetch failed", e);
-          // ここも運用ポリシー次第で alert を検討
+        } finally {
+          setWorking(false);
         }
       } else {
         console.log("[Wizard] user/bldg not set; skip Flow submit");
+        setWorking(false);
       }
-
-      // ▼ 既存のテスト用PDF生成（挙動維持）
-      const summary = JSON.stringify(values, null, 2);
-      const blob = new Blob([summary], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      setPdfUrl(url);
-      setWorking(false);
     }
   }
 
   const bWatch = watch("建物名");
   const sWatch = watch("ReportSheet（タブ名）");
 
-  // 進捗（最終確認=100%）
+  // ページ切り替え時はトップにスクロール
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [idx]);
 
+  // 進捗バー計算（修正ページ / 完了ページはカウントに含めない）
   const stepIndices = useMemo(() => {
     const arr: number[] = [];
     if (infoIndex >= 0) arr.push(infoIndex);
-    if (reviseIndex >= 0) arr.push(reviseIndex);
-    if (reviseListIndex >= 0) arr.push(reviseListIndex);
     if (basicIndex >= 0) arr.push(basicIndex);
     if (prevIndex >= 0) arr.push(prevIndex);
     arr.push(...sectionIdxs);
     if (reviewIndex >= 0) arr.push(reviewIndex);
-    if (completeIndex >= 0) arr.push(completeIndex);
     return arr;
-  }, [
-    infoIndex,
-    reviseIndex,
-    reviseListIndex,
-    basicIndex,
-    prevIndex,
-    sectionIdxs,
-    reviewIndex,
-    completeIndex,
-  ]);
+  }, [infoIndex, basicIndex, prevIndex, sectionIdxs, reviewIndex]);
 
   const curPos = Math.max(0, stepIndices.indexOf(idx));
   const reviewPos =
@@ -403,15 +402,8 @@ export function Wizard(props: WizardProps) {
               </ul>
             )}
           </div>
-          <div className="flex items-center justify-between mt-3">
-            <button
-              className="btn-yellow-light btn-nav"
-              onClick={() => {
-                if (reviseIndex >= 0) setIdx(reviseIndex);
-              }}
-            >
-              ← 修正ページ
-            </button>
+          <div className="flex items-center justify-end mt-3">
+            {/* 修正ページへの導線は消す（ページ自体は残す） */}
             <button
               className="btn-blue btn-nav"
               onClick={() => {
@@ -424,7 +416,7 @@ export function Wizard(props: WizardProps) {
         </div>
       )}
 
-      {/* 修正ページ */}
+      {/* 修正ページ（コードは残すがトップからの導線なし） */}
       {isRevise && (
         <ReviseBlock
           setIdx={setIdx}
@@ -438,7 +430,7 @@ export function Wizard(props: WizardProps) {
         <ReviseListBlock setIdx={setIdx} indices={{ reviseIndex, basicIndex }} />
       )}
 
-      {/* 基本情報（このページでも必須チェック） */}
+      {/* 基本情報 */}
       {isBasic && (
         <BasicBlock
           setIdx={setIdx}
@@ -450,7 +442,7 @@ export function Wizard(props: WizardProps) {
         />
       )}
 
-      {/* 前回点検時の状況（上下にナビ） */}
+      {/* 前回点検時の状況：前回報告書リンクのみ表示 */}
       {isPrev && (
         <div>
           <TopNav
@@ -465,6 +457,10 @@ export function Wizard(props: WizardProps) {
           <div className="mb-2">
             <div className="form-title">
               {currentPage.title || "前回点検時の状況"}
+            </div>
+            <div className="form-text" style={{ opacity: 0.9 }}>
+              建物フォルダ内 <code>reports</code> フォルダにある
+              「前回の報告書（Excel）」へのリンクだけを表示します。
             </div>
           </div>
           <div className="card">
@@ -491,7 +487,7 @@ export function Wizard(props: WizardProps) {
         </div>
       )}
 
-      {/* セクション（ページごとに必須チェック） */}
+      {/* セクション（ページごと必須チェック） */}
       {isSection && (
         <div>
           <TopNav
@@ -644,34 +640,11 @@ export function Wizard(props: WizardProps) {
         </div>
       )}
 
-      {/* 完了 */}
+      {/* 完了ページ（進捗ゲージ＋リンク） */}
       {isComplete && (
         <div className="space-y-3">
-          {working ? (
-            <div className="card text-center">
-              <div className="circle"></div>
-              <p className="form-text">報告書を作成中です…</p>
-            </div>
-          ) : (
-            <div className="card text-center">
-              <p
-                className="form-text"
-                style={{ fontSize: 16, marginTop: 6 }}
-              >
-                フォーム入力、おつかれさまでした。よく休憩して、次も安全にいきましょう。
-              </p>
-              {pdfUrl ? (
-                <a className="btn btn-nav" href={pdfUrl} download="report.pdf">
-                  PDFをダウンロード（テスト用）
-                </a>
-              ) : (
-                <span className="form-text" style={{ opacity: 0.8 }}>
-                  PDFは次工程（Excel連携）で本格生成します。
-                </span>
-              )}
-            </div>
-          )}
-          <div className="text-right">
+          <SubmitProgress reportUrl={reportUrl} />
+          <div className="text-right mt-4">
             <button
               className="btn-secondary"
               onClick={() => {
@@ -689,11 +662,7 @@ export function Wizard(props: WizardProps) {
   );
 }
 
-/* 修正・基本・前回表示の補助コンポーネント（以下そのまま） */
-// ここから下は、あなたが貼ってくれていた最新版と同じなので、そのまま利用。
-// （長いので、このままコピペで上書きしてもらえばOK。省略はしませんが、ロジックは変更なし）
-
-/* 修正・基本・前回表示の補助コンポーネント（ここから下は元のまま） */
+/* ===== 以下：修正・基本・前回表示の補助コンポーネント ===== */
 
 function ReviseBlock({
   setIdx,
@@ -923,147 +892,108 @@ function BasicBlock({ setIdx, indices, register, pages, fields, validateCurrent 
   );
 }
 
+/**
+ * 前回点検時の状況ページ用コンポーネント（前回報告書リンクのみ表示）
+ * - /api/forms/previous 経由で meta.previousFromExcel に入っている情報を使う前提
+ * - item.reportUrl / item.fileName / item.lastModified あたりを読みに行く
+ */
 function PrevGroupsView({
-  pages,
-  fields,
   meta,
-  responses,
   watchBld,
-  watchSheet,
-  isFromRevise,
-  revisePrevItem,
 }: any) {
-  const bld = (meta.fixedBuilding || watchBld || "").trim();
-  const ymd = (watchSheet || "").trim();
+  // 建物名（固定値 or 入力中の値）
+  const building = (meta.fixedBuilding || watchBld || "").trim();
 
-  const item =
-    isFromRevise && revisePrevItem
-      ? revisePrevItem
-      : bld
-      ? responses.latestBefore(bld, ymd)
-      : undefined;
+  // /api/forms/previous から埋め込まれた情報
+  const prev = meta?.previousFromExcel || null;
 
-  if (!item) {
+  // 共有リンク候補
+  const url: string | undefined =
+    (prev && typeof prev.reportUrl === "string" && prev.reportUrl) ||
+    (prev && typeof prev.report_url === "string" && prev.report_url) ||
+    (prev && typeof prev.fileUrl === "string" && prev.fileUrl) ||
+    (prev && typeof prev.file_url === "string" && prev.file_url) ||
+    (prev && typeof prev.url === "string" && prev.url) ||
+    undefined;
+
+  // ファイル名候補
+  const fileName: string | undefined =
+    (prev &&
+      (prev.fileName ||
+        prev.name ||
+        prev.displayName ||
+        prev.Name)) ||
+    undefined;
+
+  // 更新日時候補
+  const lastModified: string | undefined =
+    (prev &&
+      (prev.lastModified ||
+        prev.lastModifiedDateTime ||
+        prev.modified)) ||
+    undefined;
+
+  if (!prev) {
     return (
       <div className="form-text" style={{ opacity: 0.7 }}>
-        前回の入力済み項目はありません。
+        前回の報告書ファイルが見つかりませんでした。
+        <br />
+        まだ <code>reports</code> フォルダに報告書が作成されていない可能性があります。
       </div>
     );
   }
 
-  const values: Record<string, any> = item.values || {};
-  const allKeys = Object.keys(values);
-
-  // ラベル正規化：半角・全角スペースをすべて削除
-  const normalizeLabel = (s: string) => String(s || "").replace(/[ 　]+/g, "");
-
-  const findKeyForLabel = (label: string): string | undefined => {
-    const target = normalizeLabel(label);
-    return allKeys.find((k) => normalizeLabel(k) === target);
-  };
-
-  const usedKeys = new Set<string>();
-  const groups: { title: string; items: { label: string; value: string }[] }[] = [];
-
-  // === ① 基本情報グループ ===
-  const basicDefs: { label: string; getter: () => any }[] = [
-    {
-      label: "点検日",
-      getter: () => values["点検日"] ?? item.dateISO,
-    },
-    {
-      label: "会社名",
-      getter: () => values["会社名"] ?? item.company ?? meta.fixedCompany,
-    },
-    {
-      label: "建物名",
-      getter: () => values["建物名"] ?? item.building ?? meta.fixedBuilding,
-    },
-    {
-      label: "点検者名",
-      getter: () => values["点検者名"] ?? item.inspector,
-    },
-  ];
-
-  const basicItems: { label: string; value: string }[] = [];
-  for (const def of basicDefs) {
-    let raw = def.getter();
-    const key = findKeyForLabel(def.label);
-    if (key && raw == null) {
-      raw = values[key];
-      usedKeys.add(key);
-    } else if (key) {
-      usedKeys.add(key);
-    }
-
-    const s = raw == null ? "" : String(raw).trim();
-    if (!s) continue;
-    basicItems.push({ label: def.label, value: s });
-  }
-
-  if (basicItems.length > 0) {
-    groups.push({ title: "基本情報", items: basicItems });
-  }
-
-  // === ② セクションごとのグループ ===
-  for (const sp of pages.filter((p: any) => p.type === "section")) {
-    const fs = fields.filter((f: any) => f.pageId === sp.id);
-    const items: { label: string; value: string }[] = [];
-
-    for (const f of fs) {
-      const key = findKeyForLabel(f.label);
-      if (!key) continue;
-      const raw = values[key];
-      const s = raw == null ? "" : String(raw).trim();
-      if (!s) continue;
-
-      items.push({ label: f.label, value: s });
-      usedKeys.add(key);
-    }
-
-    if (items.length > 0) {
-      groups.push({
-        title: sp.title || "セクション",
-        items,
-      });
-    }
-  }
-
-  // === ③ その他グループ ===
-  const reservedNorms = new Set(
-    Array.from(RESERVED).map((name) => normalizeLabel(name as string)),
-  );
-
-  const others: { label: string; value: string }[] = [];
-  for (const [key, raw] of Object.entries(values)) {
-    if (usedKeys.has(key)) continue;
-    if (reservedNorms.has(normalizeLabel(key))) continue;
-
-    const s = raw == null ? "" : String(raw).trim();
-    if (!s) continue;
-
-    others.push({ label: key, value: s });
-  }
-
-  if (others.length > 0) {
-    groups.push({ title: "その他", items: others });
+  if (!url) {
+    return (
+      <div className="form-text" style={{ opacity: 0.85 }}>
+        reports フォルダに前回の報告書ファイルはありますが、
+        共有リンクが設定されていません。
+        <br />
+        OneDrive 側で共有リンクを作成するか、フローで
+        <code>Create share link</code> を追加して
+        <code>reportUrl</code> を返すようにしてください。
+      </div>
+    );
   }
 
   return (
     <div className="space-y-3">
-      {groups.map((g, i) => (
-        <div key={i} className="card">
-          <div className="form-title mb-1">{g.title}</div>
-          <div className="space-y-2">
-            {g.items.map((it, ix) => (
-              <div key={ix} className="flex">
-                <div style={{ width: 220, color: "#cfe0ff" }}>{it.label}</div>
-                <div>{it.value}</div>
-              </div>
-            ))}
-          </div>
+      <div className="form-title mb-1">前回の報告書リンク</div>
+
+      {building && (
+        <div className="form-text" style={{ opacity: 0.9 }}>
+          対象建物：{building}
         </div>
-      ))}
+      )}
+
+      <div className="card">
+        <div className="form-text mb-2">
+          下記リンクから、前回点検時に作成された報告書（Excel）を閲覧できます。
+        </div>
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-blue-300 underline break-all"
+        >
+          {fileName || "前回の報告書ファイルを開く"}
+        </a>
+        {lastModified && (
+          <div
+            className="form-text mt-2"
+            style={{ fontSize: 12, opacity: 0.8 }}
+          >
+            最終更新日：{lastModified}
+          </div>
+        )}
+        <div
+          className="form-text mt-3"
+          style={{ fontSize: 12, opacity: 0.8 }}
+        >
+          ※ 建物フォルダ内 <code>reports</code> フォルダにある Excel ファイルのうち、
+          最新のものを対象としています。
+        </div>
+      </div>
     </div>
   );
 }

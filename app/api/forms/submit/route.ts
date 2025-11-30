@@ -2,11 +2,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 // Flow 呼び出し先
-// 1) まず AppendAnswerAndRunProcessFormSubmission の URL を優先
-// 2) 未設定なら従来どおり ProcessFormSubmission の URL を使う
-const FLOW_URL =
-  process.env.FLOW_APPEND_ANSWER_AND_RUN_PROCESS_FORM_SUBMISSION_URL ??
-  process.env.FLOW_PROCESS_FORM_SUBMISSION_URL;
+// ProcessFormSubmission の URL を使う
+const FLOW_URL =process.env.FLOW_PROCESS_FORM_SUBMISSION_URL;
 
 type Answer = {
   key: string;
@@ -25,14 +22,8 @@ function toAnswerArray(src: any): Answer[] {
   if (Array.isArray(src)) {
     return src
       .map((item) => ({
-        key:
-          item && item.key != null
-            ? String(item.key)
-            : "",
-        value:
-          item && item.value != null
-            ? String(item.value)
-            : "",
+        key: item && item.key != null ? String(item.key) : "",
+        value: item && item.value != null ? String(item.value) : "",
       }))
       .filter((x) => x.key);
   }
@@ -105,7 +96,7 @@ export async function POST(req: NextRequest) {
       answers,
     };
 
-    console.log("[/api/forms/submit] forwarding to Flow", {
+    console.log("[/api/forms/submit] calling Flow", {
       user,
       bldg,
       seq,
@@ -116,29 +107,51 @@ export async function POST(req: NextRequest) {
           : "ProcessFormSubmission",
     });
 
-    // --- 2) Flow への転送（投げっぱなし ACK） ---------------------------
-    // Flow の完了は待たず、HTTP 呼び出しだけ fire-and-forget する
-    void fetch(FLOW_URL, {
+    // --- 2) Flow を同期呼び出ししてレスポンスを受け取る ------------------
+    const flowRes = await fetch(FLOW_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(forwardBody),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          console.error(
-            "[/api/forms/submit] Flow HTTP error",
-            res.status,
-            res.statusText,
-            text
-          );
-        }
-      })
-      .catch((err) => {
-        console.error("[/api/forms/submit] Flow fetch failed", err);
-      });
+    });
 
-    // フロントにはすぐ ACK を返す
+    const flowText = await flowRes.text();
+    let flowJson: any = {};
+    try {
+      flowJson = flowText ? JSON.parse(flowText) : {};
+    } catch (e) {
+      console.warn(
+        "[/api/forms/submit] Flow response JSON parse failed",
+        e,
+        flowText
+      );
+    }
+
+    if (!flowRes.ok || flowJson?.ok === false) {
+      console.warn(
+        "[/api/forms/submit] Flow returned error",
+        flowRes.status,
+        flowJson
+      );
+    }
+
+    // --- 3) Flow のレスポンスから reportUrl / traceId を拾う -------------
+    const reportUrl: string | undefined =
+      (typeof flowJson.reportUrl === "string" && flowJson.reportUrl) ||
+      (typeof flowJson.report_url === "string" && flowJson.report_url) ||
+      (typeof flowJson.fileUrl === "string" && flowJson.fileUrl) ||
+      (typeof flowJson.file_url === "string" && flowJson.file_url) ||
+      (typeof flowJson?.body?.reportUrl === "string" &&
+        flowJson.body.reportUrl) ||
+      (typeof flowJson?.data?.reportUrl === "string" &&
+        flowJson.data.reportUrl) ||
+      undefined;
+
+    const traceId: string | undefined =
+      (typeof flowJson.traceId === "string" && flowJson.traceId) ||
+      (typeof flowJson?.body?.traceId === "string" && flowJson.body.traceId) ||
+      undefined;
+
+    // --- 4) フロントに返却 ---------------------------------------------
     return NextResponse.json(
       {
         ok: true,
@@ -146,6 +159,8 @@ export async function POST(req: NextRequest) {
         user,
         bldg,
         seq,
+        reportUrl,
+        traceId,
       },
       { status: 200 }
     );
