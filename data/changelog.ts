@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    version: "v0.80",
+    date: "2025-11-30",
+    items: [
+      "公開用フォーム/ビルダー調整完了"
+    ]
+  },
+
+  {
     version: "v0.73",
     date: "2025-11-24",
     items: [

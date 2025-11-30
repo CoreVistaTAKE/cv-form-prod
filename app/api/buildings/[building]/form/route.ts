@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
+import path from 'node:path';
 
-const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
+// 一度 "raw" として受けてから、null チェック → string に確定させる
+const rawFormBaseRoot = process.env.FORM_BASE_ROOT;
 
-if (!FORM_BASE_ROOT) {
+if (!rawFormBaseRoot) {
   throw new Error('FORM_BASE_ROOT is not set in environment variables');
 }
+
+// ここから先は string 型として扱える
+const FORM_BASE_ROOT: string = rawFormBaseRoot;
 
 // building 名に危険な文字が含まれていないか簡易チェック
 const isSafeName = (name: string) =>
@@ -20,7 +24,10 @@ export async function GET(
     const building = decodeURIComponent(params.building);
 
     if (!isSafeName(building)) {
-      return NextResponse.json({ error: 'invalid building name' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'invalid building name' },
+        { status: 400 },
+      );
     }
 
     const { searchParams } = new URL(req.url);
@@ -70,6 +77,14 @@ export async function GET(
       })
       .filter((x) => !Number.isNaN(x.seqNum))
       .sort((a, b) => b.seqNum - a.seqNum); // 降順（最新が先頭）
+
+    if (withSeq.length === 0) {
+      // 数字付きのファイル名が一個もなかったケース
+      return NextResponse.json(
+        { error: '対象のフォームJSONが存在しません' },
+        { status: 404 },
+      );
+    }
 
     const latest = withSeq[0];
     const latestPath = path.join(formDir, latest.fileName);
