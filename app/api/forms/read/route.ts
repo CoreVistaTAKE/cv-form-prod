@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     }
 
     // 2) user 配下で「末尾が _建物名」のフォルダも候補にする
-    //    例: form_PJ1_0001_テストA
+    //    例: FirstService _001_テストA
     const entries = fs.readdirSync(userRoot, { withFileTypes: true });
     for (const ent of entries) {
       if (!ent.isDirectory()) continue;

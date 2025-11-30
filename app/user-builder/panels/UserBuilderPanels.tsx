@@ -36,7 +36,7 @@ type StatusInfo = {
   statusPath?: string;
 };
 
-// 建物フォルダ名（例: form_PJ1_001_テストA）から建物名だけを取り出す
+// 建物フォルダ名（例: FirstService_001_テストA）から建物名だけを取り出す
 function extractBldgNameFromToken(token: string): string {
   const trimmed = (token || '').trim();
   if (!trimmed) return '';
@@ -99,7 +99,7 @@ export default function UserBuilderPanels({
 
   // ===== Intake（サーバ上の JSON を読み込む）=====
   const [lookUser] = useState<string>(
-    defaultUser || process.env.NEXT_PUBLIC_DEFAULT_USER || 'form_PJ1'
+    defaultUser || process.env.NEXT_PUBLIC_DEFAULT_USER || 'FirstService'
   );
   const [buildings, setBuildings] = useState<string[]>([]);
   const [picked, setPicked] = useState<string>('');

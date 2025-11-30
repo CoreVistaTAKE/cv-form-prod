@@ -10,7 +10,7 @@ export async function POST(req: Request) {
     const defaultUser =
       process.env.NEXT_PUBLIC_NEXT_PUBLIC_DEFAULT_USER ||
       process.env.NEXT_PUBLIC_DEFAULT_USER ||
-      'form_PJ1';
+      'FirstService';
 
     const varUser =
       (typeof rawUser === 'string' && rawUser.trim()) || defaultUser;
@@ -24,7 +24,6 @@ export async function POST(req: Request) {
     }
 
     // 例：
-    //   C:\...\01_InternalTest\form_PJ1
     //   C:\...\02_Cliants\FirstService
     const userRoot = path.join(root, varUser);
 

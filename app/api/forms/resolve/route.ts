@@ -61,7 +61,7 @@ export async function POST(req: Request) {
     for (let i = start; i >= Math.max(1, start - (MAX_TRY - 1)); i--) {
       const seq = String(i).padStart(3, "0");
       const token = `${userLower}_${seq}_${bldg}`;
-      const statusPath = `/drive/root:/01_InternalTest/${user}/${token}/form/status.json`;
+      const statusPath = `/drive/root:/02_Cliants/${user}/${token}/form/status.json`;
 
       try {
         const st = await postJson<GetStatusResp>(FLOW_GET_BUILD_STATUS_URL, { statusPath });
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
 
         const schemaPath =
           schemaPathFromFlow ||
-          `/drive/root:/01_InternalTest/${user}/${token}/form/form_base_${bldg}_${seq}.json`;
+          `/drive/root:/02_Cliants/${user}/${token}/form/form_base_${bldg}_${seq}.json`;
 
         // 見つかったら返却（URL/QR も添える）
         const finalUrl =

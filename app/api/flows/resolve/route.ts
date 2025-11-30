@@ -31,7 +31,7 @@ export async function POST(req: Request) {
 
     // 2) status.json のパス作成
     const statusPath =
-      `/drive/root:/01_InternalTest/${varUser}/${varUser}_${seq}_${varBldg}/form/status.json`;
+      `/drive/root:/02_Cliants/${varUser}/${varUser}_${seq}_${varBldg}/form/status.json`;
 
     // 3) GetBuildStatus で URL を取得
     const stRes = await fetch(GET_STATUS, {

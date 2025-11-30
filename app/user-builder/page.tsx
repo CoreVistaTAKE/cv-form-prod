@@ -1,3 +1,4 @@
+// app/user-builder/page.tsx
 import UserBuilderClient from './page.client';
 export const dynamic = 'force-dynamic';
 

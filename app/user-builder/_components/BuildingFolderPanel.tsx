@@ -19,7 +19,7 @@ type Props = {
   defaultHost?: string | null;
 };
 
-const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "form_PJ1";
+const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
 const ENV_DEFAULT_HOST =
   process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp";
 

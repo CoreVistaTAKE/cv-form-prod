@@ -15,7 +15,7 @@ type ApiResult = {
 const HOST = 'https://www.form.visone-ai.jp'; // 固定（1行・https・空白/改行/「>」混入なし）
 
 export default function BuildingFolderPanel() {
-  const [username, setUsername] = useState('form_PJ1');
+  const [username, setUsername] = useState('FirstService ');
   const [bldg, setBldg] = useState('テストビルA');
   const [stage, setStage] = useState<Stage>('idle');
   const [progress, setProgress] = useState(0);
@@ -129,7 +129,7 @@ export default function BuildingFolderPanel() {
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="form_PJ1"
+            placeholder="FirstService "
             style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 6, minWidth: 220 }}
           />
         </label>

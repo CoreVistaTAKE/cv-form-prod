@@ -1,10 +1,10 @@
 // app/api/forms/previous/download/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
 const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
-
+export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   if (!FORM_BASE_ROOT) {
     return NextResponse.json(

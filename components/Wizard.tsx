@@ -19,7 +19,7 @@ const RESERVED = new Set([
 ]);
 
 type WizardProps = {
-  user?: string;  // /fill の URL の user（例: form_PJ1）
+  user?: string;  // /fill の URL の user（例: FirstService）
   bldg?: string;  // /fill の URL の bldg（例: テストビルB）
   seq?: string;   // 3桁 Sseq（例: 001）
   host?: string;  // 今回の Flow では未使用だが将来拡張用

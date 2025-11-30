@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as Body;
 
     const defaultUser =
-      process.env.NEXT_PUBLIC_DEFAULT_USER || 'form_PJ1';
+      process.env.NEXT_PUBLIC_DEFAULT_USER || 'FirstService';
     const varUser =
       (body.varUser && body.varUser.trim()) || defaultUser;
 
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 例）...\01_InternalTest\form_PJ1\BaseSystem\form\form_base.json
+    // 例）...\02_Cliants\FirstService\BaseSystem\form\form_base.json
     const basePath = path.join(
       root,
       varUser,
