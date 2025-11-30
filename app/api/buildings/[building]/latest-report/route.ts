@@ -1,76 +1,77 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
 
 const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
 
-if (!FORM_BASE_ROOT) {
-  throw new Error('FORM_BASE_ROOT is not set in environment variables');
-}
-
+// building 名に危険な文字が含まれていないか簡易チェック
 const isSafeName = (name: string) =>
   !name.includes('..') && !name.includes('/') && !name.includes('\\');
 
 export async function GET(
-  _req: Request,
+  req: NextRequest,
   { params }: { params: { building: string } },
 ) {
   try {
     const building = decodeURIComponent(params.building);
 
     if (!isSafeName(building)) {
-      return new NextResponse('invalid building name', { status: 400 });
-    }
-
-    const reportDir = path.join(FORM_BASE_ROOT, building, 'report');
-
-    const files = await fs.readdir(reportDir, { withFileTypes: true });
-
-    // Excel っぽい拡張子だけを対象
-    const excelFiles = files
-      .filter((f) => f.isFile())
-      .map((f) => f.name)
-      .filter(
-        (name) =>
-          name.toLowerCase().endsWith('.xlsx') ||
-          name.toLowerCase().endsWith('.xlsm') ||
-          name.toLowerCase().endsWith('.xls'),
+      return NextResponse.json(
+        { ok: false, error: 'invalid building name' },
+        { status: 400 },
       );
-
-    if (excelFiles.length === 0) {
-      return new NextResponse('no report excel found', { status: 404 });
     }
 
-    // 更新日時で一番新しいものを選ぶ
-    const stats = await Promise.all(
-      excelFiles.map(async (fileName) => {
-        const fullPath = path.join(reportDir, fileName);
-        const stat = await fs.stat(fullPath);
-        return { fileName, mtime: stat.mtime.getTime() };
-      }),
+    // ★ ここで環境チェック（Heroku などで未設定でもビルドは通る）
+    if (!FORM_BASE_ROOT) {
+      console.error('FORM_BASE_ROOT is not set; latest-report API is unavailable');
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Server misconfiguration: FORM_BASE_ROOT is not set',
+        },
+        { status: 500 },
+      );
+    }
+
+    const reportDir = path.join(FORM_BASE_ROOT, building, 'report'); // or 'reports'
+
+    const entries = await fs.readdir(reportDir, { withFileTypes: true });
+
+    const candidates = await Promise.all(
+      entries
+        .filter(
+          (e) => e.isFile() && e.name.toLowerCase().endsWith('.xlsx'),
+        )
+        .map(async (e) => {
+          const fullPath = path.join(reportDir, e.name);
+          const stat = await fs.stat(fullPath);
+          return { fileName: e.name, mtime: stat.mtime };
+        }),
     );
 
-    stats.sort((a, b) => b.mtime - a.mtime);
-    const latest = stats[0];
+    if (candidates.length === 0) {
+      return NextResponse.json({ ok: true, item: null });
+    }
 
-    const latestPath = path.join(reportDir, latest.fileName);
-    const fileBuffer = await fs.readFile(latestPath);
+    candidates.sort(
+      (a, b) => b.mtime.getTime() - a.mtime.getTime(),
+    );
+    const latest = candidates[0];
 
-    return new NextResponse(fileBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type':
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        // ブラウザでそのまま開く or ダウンロード
-        'Content-Disposition': `inline; filename="${encodeURIComponent(
-          latest.fileName,
-        )}"`,
+    return NextResponse.json({
+      ok: true,
+      item: {
+        fileName: latest.fileName,
+        lastModified: latest.mtime.toISOString(),
+        url: null, // SharePoint URL は Flow 側で取る想定ならここは null/undefined でもOK
       },
     });
   } catch (error) {
-    console.error('Error serving latest report excel:', error);
-    return new NextResponse('failed to load latest report excel', {
-      status: 500,
-    });
+    console.error('Error loading latest report:', error);
+    return NextResponse.json(
+      { ok: false, error: '最新の報告書取得に失敗しました' },
+      { status: 500 },
+    );
   }
 }
