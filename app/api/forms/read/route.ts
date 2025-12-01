@@ -1,141 +1,126 @@
 // app/api/forms/read/route.ts
-import { NextResponse } from "next/server";
-import fs from "fs";
+import { NextRequest, NextResponse } from "next/server";
+import fs from "fs/promises";
 import path from "path";
 
-const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
+const ENV_FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
 
-export const dynamic = "force-dynamic";
+/** FORM_BASE_ROOT を安全に取得 */
+function getFormBaseRoot(): string {
+  const root = ENV_FORM_BASE_ROOT || process.env.FORM_BASE_ROOT;
+  if (!root) {
+    throw new Error("FORM_BASE_ROOT is not set in environment variables");
+  }
+  return root;
+}
 
-type Body = {
-  varUser?: string;
-  varBldg?: string;
+// 例: "FirstService_001_テストビルC" を分解する
+const BUILDING_TOKEN_RE = /^([A-Za-z0-9]+)_(\d{3})_(.+)$/;
+
+type Schema = {
+  meta?: any;
+  pages?: any[];
+  fields?: any[];
 };
 
-export async function POST(req: Request) {
-  if (!FORM_BASE_ROOT) {
-    return NextResponse.json(
-      {
-        ok: false,
-        reason: "FORM_BASE_ROOT が未設定です。.env.local を確認してください。",
-      },
-      { status: 500 },
-    );
-  }
+async function readJson(filePath: string): Promise<any> {
+  const raw = await fs.readFile(filePath, "utf-8");
+  return JSON.parse(raw);
+}
 
+export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json().catch(() => ({}))) as Body;
-    const user = (body.varUser || "").trim();
-    const bldg = (body.varBldg || "").trim();
+    const body = (await req.json().catch(() => ({}))) as any;
 
-    if (!user) {
-      return NextResponse.json(
-        { ok: false, reason: "varUser が空です。" },
-        { status: 400 },
-      );
-    }
-    if (!bldg) {
-      return NextResponse.json(
-        { ok: false, reason: "varBldg が空です。" },
-        { status: 400 },
-      );
-    }
+    // --- パラメータ吸収（var付き/無しどちらでもOK） ---
+    const user = (
+      body.varUser ||
+      body.user ||
+      process.env.NEXT_PUBLIC_DEFAULT_USER ||
+      "FirstService"
+    )
+      .toString()
+      .trim();
 
-    const userRoot = path.join(FORM_BASE_ROOT, user);
-    if (!fs.existsSync(userRoot)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: `ファイル/フォルダが見つかりませんでした: ${userRoot}`,
-        },
-        { status: 500 },
-      );
-    }
+    const bldgRaw = (body.varBldg || body.bldg || "")
+      .toString()
+      .trim();
 
-    // ===== 建物フォルダ候補を列挙 =====
-    const candidates: { folder: string; formDir: string }[] = [];
+    const seqRaw = body.varSeq ?? body.seq ?? "";
+    const seq = seqRaw
+      ? seqRaw.toString().padStart(3, "0")
+      : "001"; // デフォルト 001
 
-    // 1) そのまま user/bldg/form というフォルダがあるか
-    const directFolder = path.join(userRoot, bldg);
-    const directFormDir = path.join(directFolder, "form");
-    if (fs.existsSync(directFormDir)) {
-      candidates.push({ folder: directFolder, formDir: directFormDir });
+    const root = getFormBaseRoot(); // 例: fs-root/02_Cliants/FirstService
+
+    // ===== 1) BaseSystem 読込（建物指定なし） =====
+    if (!bldgRaw) {
+      const basePath = path.join(root, "BaseSystem", "form", "form_base.json");
+      const schema = (await readJson(basePath)) as Schema;
+      return NextResponse.json({ ok: true, schema });
     }
 
-    // 2) user 配下で「末尾が _建物名」のフォルダも候補にする
-    //    例: FirstService _001_テストA
-    const entries = fs.readdirSync(userRoot, { withFileTypes: true });
-    for (const ent of entries) {
-      if (!ent.isDirectory()) continue;
-      const name = ent.name;
-      if (name === "BaseSystem") continue;
+    // ===== 2) 建物フォルダ名を決定 =====
+    // bldgRaw が "FirstService_001_テストビルC" 形式ならそのまま使う
+    // そうでなければ "<user>_<seq>_<bldgRaw>" を自動で作る
+    let folderName = bldgRaw;
+    let buildingLabel = bldgRaw;
+    let seqForFile = seq;
 
-      if (name === bldg || name.endsWith("_" + bldg)) {
-        const formDir = path.join(userRoot, name, "form");
-        if (fs.existsSync(formDir)) {
-          candidates.push({
-            folder: path.join(userRoot, name),
-            formDir,
-          });
-        }
+    const m = BUILDING_TOKEN_RE.exec(bldgRaw);
+    if (m) {
+      // m[1]=user, m[2]=seq, m[3]=建物名
+      folderName = bldgRaw;
+      buildingLabel = m[3];
+      seqForFile = m[2];
+    } else {
+      folderName = `${user}_${seq}_${bldgRaw}`;
+      buildingLabel = bldgRaw;
+      seqForFile = seq;
+    }
+
+    const formDir = path.join(root, folderName, "form");
+
+    // ===== 3) スキーマファイルを探す =====
+    // 優先: form_base.json
+    // 次点: form_base_<建物名>_<seq>.json
+    let schema: Schema | null = null;
+    const primaryPath = path.join(formDir, "form_base.json");
+    let firstError: unknown = null;
+
+    try {
+      schema = (await readJson(primaryPath)) as Schema;
+    } catch (e) {
+      firstError = e;
+    }
+
+    if (!schema) {
+      const altName = `form_base_${buildingLabel}_${seqForFile}.json`;
+      const altPath = path.join(formDir, altName);
+      try {
+        schema = (await readJson(altPath)) as Schema;
+      } catch (e2) {
+        console.error("[api/forms/read] schema not found", {
+          formDir,
+          primaryPath,
+          altPath,
+          firstError,
+          secondError: e2,
+        });
+        return NextResponse.json(
+          {
+            ok: false,
+            reason: `ファイル/フォルダが見つかりませんでした: ${formDir}`,
+          },
+          { status: 500 },
+        );
       }
     }
 
-    if (candidates.length === 0) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: `ファイル/フォルダが見つかりませんでした: ${directFormDir}`,
-        },
-        { status: 500 },
-      );
-    }
-
-    // フォルダ名の辞書順で「一番後ろ」（＝Seq が一番大きい想定）を採用
-    candidates.sort((a, b) =>
-      a.folder.localeCompare(b.folder, "ja"),
-    );
-    const picked = candidates[candidates.length - 1];
-
-    // ===== form_base*.json を探す =====
-    const files = fs.readdirSync(picked.formDir);
-    const jsonFiles = files.filter(
-      (name) =>
-        name.toLowerCase().startsWith("form_base") &&
-        name.toLowerCase().endsWith(".json"),
-    );
-
-    if (jsonFiles.length === 0) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: `ファイル/フォルダが見つかりませんでした: ${path.join(
-            picked.formDir,
-            "form_base*.json",
-          )}`,
-        },
-        { status: 500 },
-      );
-    }
-
-    // ファイル名の辞書順で最後のものを「最新」とみなす
-    jsonFiles.sort();
-    const jsonName = jsonFiles[jsonFiles.length - 1];
-    const jsonPath = path.join(picked.formDir, jsonName);
-
-    const content = fs.readFileSync(jsonPath, "utf8");
-    const schema = JSON.parse(content);
-
-    return NextResponse.json(
-      {
-        ok: true,
-        schema,
-        folder: picked.folder,
-        jsonPath,
-      },
-      { status: 200 },
-    );
+    // ===== 4) 形式を揃えて返却 =====
+    return NextResponse.json({ ok: true, schema });
   } catch (err: any) {
+    console.error("[api/forms/read] error", err);
     return NextResponse.json(
       {
         ok: false,
