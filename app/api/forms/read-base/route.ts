@@ -1,62 +1,46 @@
-import { NextResponse } from 'next/server';
-import fs from 'fs/promises';
-import path from 'path';
+import { NextRequest, NextResponse } from "next/server";
+import fs from "fs/promises";
+import path from "path";
 
-type Body = {
-  varUser?: string;
-};
+const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
 
-function pickSchema(raw: any) {
-  if (raw && typeof raw === 'object' && 'schema' in raw) {
-    return (raw as any).schema;
-  }
-  return raw;
-}
-
-export async function POST(req: Request) {
+/**
+ * BaseSystem 用 form_base.json を読むエンドポイント
+ * - パス: FORM_BASE_ROOT/BaseSystem/form/form_base.json
+ * - Body の varUser などは今は使わない（互換のため受けるだけ）
+ */
+export async function POST(_req: NextRequest) {
   try {
-    const body = (await req.json().catch(() => ({}))) as Body;
-
-    const defaultUser =
-      process.env.NEXT_PUBLIC_DEFAULT_USER || 'FirstService';
-    const varUser =
-      (body.varUser && body.varUser.trim()) || defaultUser;
-
-    const root = process.env.FORM_BASE_ROOT;
-    if (!root) {
+    if (!FORM_BASE_ROOT) {
       return NextResponse.json(
-        { ok: false, reason: 'FORM_BASE_ROOT が .env.local に設定されていません。' },
+        {
+          ok: false,
+          reason:
+            "FORM_BASE_ROOT が設定されていません（.env.local と Heroku Config Vars を確認してください）。",
+        },
         { status: 500 },
       );
     }
 
-    // 例）...\02_Cliants\FirstService\BaseSystem\form\form_base.json
+    // 例: fs-root/02_Cliants/FirstService/BaseSystem/form/form_base.json
     const basePath = path.join(
-      root,
-      varUser,
-      'BaseSystem',
-      'form',
-      'form_base.json',
+      FORM_BASE_ROOT,
+      "BaseSystem",
+      "form",
+      "form_base.json",
     );
 
-    const text = await fs.readFile(basePath, 'utf8');
-    const rawJson = JSON.parse(text);
-    const schema = pickSchema(rawJson);
+    const raw = await fs.readFile(basePath, "utf-8");
+    const schema = JSON.parse(raw);
 
-    return NextResponse.json({
-      ok: true,
-      schema,
-      file: basePath,
-    });
+    return NextResponse.json({ ok: true, schema });
   } catch (e: any) {
-    console.error('[api/forms/read-base] error', e);
-    const msg =
-      e?.code === 'ENOENT'
-        ? `BaseSystem の form_base.json が見つかりませんでした: ${e?.path || ''}`
+    console.error("[api/forms/read-base] error", e);
+    const reason =
+      e?.code === "ENOENT"
+        ? `BaseSystem の form_base.json が見つかりませんでした: ${e?.path || ""}`
         : e?.message || String(e);
-    return NextResponse.json(
-      { ok: false, reason: msg },
-      { status: 500 },
-    );
+
+    return NextResponse.json({ ok: false, reason }, { status: 500 });
   }
 }

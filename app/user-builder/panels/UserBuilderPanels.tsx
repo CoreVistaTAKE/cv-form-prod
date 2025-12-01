@@ -1,5 +1,6 @@
 // app/user-builder/panels/UserBuilderPanels.tsx
 'use client';
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { useBuilderStore } from '@/store/builder';
 import { applyTheme, type Theme } from '@/utils/theme';
@@ -36,14 +37,14 @@ type StatusInfo = {
   statusPath?: string;
 };
 
-// 建物フォルダ名（例: FirstService_001_テストA）から建物名だけを取り出す
+// 建物フォルダ名（例: FirstService_001_テストビルA）から建物名だけを取り出す
 function extractBldgNameFromToken(token: string): string {
   const trimmed = (token || '').trim();
   if (!trimmed) return '';
   const parts = trimmed.split('_');
-  // 想定: user_seq_建物名 → 4つ以上あるなら 4 つ目以降を建物名として扱う
-  if (parts.length >= 4) {
-    return parts.slice(3).join('_');
+  // 想定: user_seq_建物名 → 3つ以上あるなら 3つ目以降を建物名として扱う
+  if (parts.length >= 3) {
+    return parts.slice(2).join('_');
   }
   if (parts.length >= 2) {
     return parts[parts.length - 1];
@@ -51,9 +52,10 @@ function extractBldgNameFromToken(token: string): string {
   return trimmed;
 }
 
-// localStorage の cv_registry から建物名に対応する statusPath を探す
-function findStatusPathByBldg(bldgName: string): string | undefined {
-  if (!bldgName) return;
+// localStorage の cv_registry から「フォルダ名」に対応する statusPath を探す
+// folderToken 例: "FirstService_001_テストビルA"
+function findStatusPathByFolderToken(folderToken: string): string | undefined {
+  if (!folderToken) return;
   try {
     const raw = localStorage.getItem('cv_registry');
     if (!raw) return;
@@ -62,10 +64,10 @@ function findStatusPathByBldg(bldgName: string): string | undefined {
     const hit = arr.find(
       (x: any) =>
         x &&
-        typeof x.bldg === 'string' &&
-        x.bldg === bldgName &&
+        typeof x.bldgFolderName === 'string' &&
+        x.bldgFolderName === folderToken &&
         typeof x.statusPath === 'string' &&
-        x.statusPath
+        x.statusPath,
     );
     return hit?.statusPath as string | undefined;
   } catch {
@@ -84,13 +86,15 @@ export default function UserBuilderPanels({
   // ===== 初期化 =====
   useEffect(() => {
     builder.initOnce();
-  }, []); // ★ ここを [] に戻す（無限ループ防止）
+  }, []); // 無限ループ防止のため依存配列は空
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem('cv_form_base_v049');
       if (raw) builder.hydrateFrom(JSON.parse(raw));
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [builder.hydrateFrom]);
 
   useEffect(() => {
@@ -99,7 +103,7 @@ export default function UserBuilderPanels({
 
   // ===== Intake（サーバ上の JSON を読み込む）=====
   const [lookUser] = useState<string>(
-    defaultUser || process.env.NEXT_PUBLIC_DEFAULT_USER || 'FirstService'
+    defaultUser || process.env.NEXT_PUBLIC_DEFAULT_USER || 'FirstService',
   );
   const [buildings, setBuildings] = useState<string[]>([]);
   const [picked, setPicked] = useState<string>('');
@@ -119,7 +123,9 @@ export default function UserBuilderPanels({
           setStatusInfo(obj);
         }
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, []);
 
   async function reloadBuildings() {
@@ -137,7 +143,7 @@ export default function UserBuilderPanels({
       const opts: string[] = Array.isArray(j?.options) ? j.options : [];
       setBuildings(opts);
       setPicked((prev) =>
-        prev && opts.includes(prev) ? prev : opts[0] || ''
+        prev && opts.includes(prev) ? prev : opts[0] || '',
       );
       setIntakeMsg('');
     } catch (e: any) {
@@ -152,6 +158,7 @@ export default function UserBuilderPanels({
     setIntakeMsg('');
     setIntakeBusy(true);
     try {
+      // picked は「フォルダ名」（例: FirstService_001_テストビルA）
       const r = await fetch('/api/forms/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,7 +173,7 @@ export default function UserBuilderPanels({
 
       // ▼ ステータスをこの建物に切り替える
       const bldgName = extractBldgNameFromToken(picked);
-      const statusPath = findStatusPathByBldg(bldgName);
+      const statusPath = findStatusPathByFolderToken(picked); // フォルダ名で検索
       if (statusPath) {
         const next: StatusInfo = {
           user: lookUser,
@@ -175,11 +182,25 @@ export default function UserBuilderPanels({
         };
         setStatusInfo(next);
         try {
-          localStorage.setItem('cv:lastBuild', JSON.stringify(next));
-        } catch {}
+          localStorage.setItem(
+            'cv:lastBuild',
+            JSON.stringify({
+              ...next,
+              bldgFolderName: picked,
+            }),
+          );
+        } catch {
+          // ignore
+        }
       } else {
         // この PC でまだ一度もビルドしていない建物 → ステータスは空表示
         setStatusInfo(null);
+        try {
+          // 「最後に見ていた建物」の情報もクリアしておく
+          localStorage.removeItem('cv:lastBuild');
+        } catch {
+          // ignore
+        }
       }
 
       alert(`読込完了: ${picked}`);
@@ -211,7 +232,9 @@ export default function UserBuilderPanels({
       setStatusInfo(null);
       try {
         localStorage.removeItem('cv:lastBuild');
-      } catch {}
+      } catch {
+        // ignore
+      }
 
       alert('BaseSystem（標準フォーム）を読み込みました。');
     } catch (e: any) {
@@ -237,12 +260,12 @@ export default function UserBuilderPanels({
     { k: 'green', name: '緑', bg: '#5ce0b1', fg: '#0f241e', border: '#234739' },
   ];
 
-  // ===== 対象外(非適用) UI（現行コードのまま） =====
+  // ===== 対象外(非適用) UI =====
   const pages = builder.pages as any[];
   const fields = builder.fields as any[];
   const sectionPages = useMemo(
     () => pages.filter((p) => p.type === 'section'),
-    [pages]
+    [pages],
   );
   const fieldsByPage = useMemo(() => {
     const m: Record<string, any[]> = {};
@@ -253,21 +276,23 @@ export default function UserBuilderPanels({
     return m;
   }, [fields]);
   const [excludedPages, setExcludedPages] = useState<Set<string>>(
-    () => new Set()
+    () => new Set(),
   );
   const [excludedFields, setExcludedFields] = useState<Set<string>>(
-    () => new Set()
+    () => new Set(),
   );
+
   useEffect(() => {
     localStorage.setItem(
       'cv_excluded_pages',
-      JSON.stringify(Array.from(excludedPages))
+      JSON.stringify(Array.from(excludedPages)),
     );
     localStorage.setItem(
       'cv_excluded_fields',
-      JSON.stringify(Array.from(excludedFields))
+      JSON.stringify(Array.from(excludedFields)),
     );
   }, [excludedPages, excludedFields]);
+
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
     setExcludedPages((prev) => {
       const next = new Set(prev);
@@ -285,6 +310,7 @@ export default function UserBuilderPanels({
       return next;
     });
   };
+
   const toggleFieldExclude = (fid: string) => {
     setExcludedFields((prev) => {
       const next = new Set(prev);
@@ -381,7 +407,7 @@ export default function UserBuilderPanels({
             const fids = fs
               .map(
                 (f: any, idx: number) =>
-                  (f.id ?? f.label ?? `f-${idx}`) as string
+                  (f.id ?? f.label ?? `f-${idx}`) as string,
               )
               .filter(Boolean);
             const pageExcluded = excludedPages.has(p.id);
@@ -499,7 +525,7 @@ export default function UserBuilderPanels({
         </div>
       </SectionCard>
 
-      {/* 建物フォルダ作成とURL発行（既存のまま） */}
+      {/* 建物フォルダ作成とURL発行 */}
       <SectionCard id="folder" title="建物フォルダ作成とURL発行">
         <BuildingFolderPanel
           createUrl={createUrl}
