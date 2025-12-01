@@ -1,3 +1,4 @@
+//app/user-builder/_components/BuildStatus.client.tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -23,6 +24,8 @@ type RegistryEntry = {
   statusPath: string;
   url?: string;
 };
+
+const MAX_ATTEMPTS = 2; // ★ 最大試行回数：2回（初回 + リトライ1回）
 
 function upsertRegistry(entry: RegistryEntry) {
   try {
@@ -124,7 +127,7 @@ export default function BuildStatus({
     }
   }, [statusPath, user, bldg]);
 
-  // ポーリング
+  // ポーリング（最大 MAX_ATTEMPTS 回まで）
   useEffect(() => {
     if (!info.statusPath) return;
     if (!statusUrl) {
@@ -136,9 +139,12 @@ export default function BuildStatus({
 
     let cancelled = false;
     let timer: any = null;
+    let tries = 0; // ★ このエフェクト内だけでカウント
 
     const poll = async () => {
       if (cancelled) return;
+      tries += 1;
+
       setLoading(true);
       try {
         const res = await fetch(statusUrl, {
@@ -150,9 +156,11 @@ export default function BuildStatus({
           const txt = await res.text().catch(() => "");
           throw new Error(`GetBuildStatus HTTP ${res.status} ${txt}`);
         }
+
         const json = (await res.json().catch(() => ({}))) as StatusRes;
         const p = typeof json.pct === "number" ? json.pct : 0;
         setPct(p);
+
         if (json.url) {
           setUrl(json.url);
           // 完了時にレジストリへ保存（フォルダ名は upsertRegistry 内で補完）
@@ -162,15 +170,34 @@ export default function BuildStatus({
             url: json.url,
           });
         }
+
         setErr(null);
+
+        // ★ pct が 100 以上ならここで終了（成功）
         if (p >= 100) return;
+
+        // ★ 試行回数上限に達したら終了（失敗扱い）
+        if (tries >= MAX_ATTEMPTS) {
+          setErr(
+            "ステータス取得の試行回数が上限に達しました。しばらくしてから再度お試しください。",
+          );
+          return;
+        }
       } catch (e: any) {
         console.error(e);
         setErr(e?.message || String(e));
+
+        // エラー時もリトライカウントに含める。
+        if (tries >= MAX_ATTEMPTS) {
+          return;
+        }
       } finally {
         setLoading(false);
       }
-      if (!cancelled) timer = setTimeout(poll, 1500);
+
+      if (!cancelled) {
+        timer = setTimeout(poll, 1500);
+      }
     };
 
     poll();
