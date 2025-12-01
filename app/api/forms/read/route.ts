@@ -3,121 +3,122 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 
-const ENV_FORM_BASE_ROOT = process.env.FORM_BASE_ROOT;
+const FLOW_GET_FORM_SCHEMA_URL = process.env.FLOW_GET_FORM_SCHEMA_URL ?? "";
+const FORM_BASE_ROOT = process.env.FORM_BASE_ROOT || "";
 
-/** FORM_BASE_ROOT を安全に取得 */
-function getFormBaseRoot(): string {
-  const root = ENV_FORM_BASE_ROOT || process.env.FORM_BASE_ROOT;
-  if (!root) {
-    throw new Error("FORM_BASE_ROOT is not set in environment variables");
+// Flow の応答から schema を取り出すヘルパ
+function extractSchema(payload: any) {
+  // ① { ok:true, schema:{...} }
+  if (payload?.ok && payload.schema) return payload.schema;
+  // ② { ok:true, data:{schema:{...}} }
+  if (payload?.ok && payload.data?.schema) return payload.data.schema;
+  // ③ {meta,pages,fields} をそのまま返してくるパターン
+  if (
+    payload?.meta &&
+    Array.isArray(payload.pages) &&
+    Array.isArray(payload.fields)
+  ) {
+    return payload;
   }
-  return root;
-}
-
-// 例: "FirstService_001_テストビルC" を分解する
-const BUILDING_TOKEN_RE = /^([A-Za-z0-9]+)_(\d{3})_(.+)$/;
-
-type Schema = {
-  meta?: any;
-  pages?: any[];
-  fields?: any[];
-};
-
-async function readJson(filePath: string): Promise<any> {
-  const raw = await fs.readFile(filePath, "utf-8");
-  return JSON.parse(raw);
+  throw new Error("Flow 応答から schema を抽出できませんでした。");
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as any;
 
-    // --- パラメータ吸収（var付き/無しどちらでもOK） ---
-    const user = (
-      body.varUser ||
-      body.user ||
-      process.env.NEXT_PUBLIC_DEFAULT_USER ||
-      "FirstService"
-    )
+    const user =
+      (body.varUser || body.user || process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService")
+        .toString()
+        .trim();
+
+    const bldg = (body.varBldg || body.bldg || "")
       .toString()
       .trim();
 
-    const bldgRaw = (body.varBldg || body.bldg || "")
-      .toString()
-      .trim();
+    const seqRaw = (body.varSeq || body.seq || "001").toString();
+    const seq = seqRaw.padStart(3, "0");
 
-    const seqRaw = body.varSeq ?? body.seq ?? "";
-    const seq = seqRaw
-      ? seqRaw.toString().padStart(3, "0")
-      : "001"; // デフォルト 001
+    // ===============================
+    // 1) Flow 優先: OneDrive から読む
+    // ===============================
+    if (FLOW_GET_FORM_SCHEMA_URL) {
+      const res = await fetch(FLOW_GET_FORM_SCHEMA_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          varUser: user,
+          varBldg: bldg,
+          varSeq: seq,
+        }),
+      });
 
-    const root = getFormBaseRoot(); // 例: fs-root/02_Cliants/FirstService
-
-    // ===== 1) BaseSystem 読込（建物指定なし） =====
-    if (!bldgRaw) {
-      const basePath = path.join(root, "BaseSystem", "form", "form_base.json");
-      const schema = (await readJson(basePath)) as Schema;
-      return NextResponse.json({ ok: true, schema });
-    }
-
-    // ===== 2) 建物フォルダ名を決定 =====
-    // bldgRaw が "FirstService_001_テストビルC" 形式ならそのまま使う
-    // そうでなければ "<user>_<seq>_<bldgRaw>" を自動で作る
-    let folderName = bldgRaw;
-    let buildingLabel = bldgRaw;
-    let seqForFile = seq;
-
-    const m = BUILDING_TOKEN_RE.exec(bldgRaw);
-    if (m) {
-      // m[1]=user, m[2]=seq, m[3]=建物名
-      folderName = bldgRaw;
-      buildingLabel = m[3];
-      seqForFile = m[2];
-    } else {
-      folderName = `${user}_${seq}_${bldgRaw}`;
-      buildingLabel = bldgRaw;
-      seqForFile = seq;
-    }
-
-    const formDir = path.join(root, folderName, "form");
-
-    // ===== 3) スキーマファイルを探す =====
-    // 優先: form_base.json
-    // 次点: form_base_<建物名>_<seq>.json
-    let schema: Schema | null = null;
-    const primaryPath = path.join(formDir, "form_base.json");
-    let firstError: unknown = null;
-
-    try {
-      schema = (await readJson(primaryPath)) as Schema;
-    } catch (e) {
-      firstError = e;
-    }
-
-    if (!schema) {
-      const altName = `form_base_${buildingLabel}_${seqForFile}.json`;
-      const altPath = path.join(formDir, altName);
-      try {
-        schema = (await readJson(altPath)) as Schema;
-      } catch (e2) {
-        console.error("[api/forms/read] schema not found", {
-          formDir,
-          primaryPath,
-          altPath,
-          firstError,
-          secondError: e2,
-        });
+      const text = await res.text();
+      if (!res.ok) {
         return NextResponse.json(
           {
             ok: false,
-            reason: `ファイル/フォルダが見つかりませんでした: ${formDir}`,
+            reason: `Flow HTTP ${res.status}: ${text}`,
           },
           { status: 500 },
         );
       }
+
+      let payload: any = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error("Flow 応答 JSON の parse に失敗しました。");
+      }
+
+      const schema = extractSchema(payload);
+      return NextResponse.json({ ok: true, schema });
     }
 
-    // ===== 4) 形式を揃えて返却 =====
+    // ==========================================
+    // 2) Flow 未設定時のフォールバック: FS から読む
+    //    （ローカル開発や緊急時用）
+    // ==========================================
+    if (!FORM_BASE_ROOT) {
+      return NextResponse.json(
+        {
+          ok: false,
+          reason:
+            "FLOW_GET_FORM_SCHEMA_URL も FORM_BASE_ROOT も未設定です。どちらかを設定してください。",
+        },
+        { status: 500 },
+      );
+    }
+
+    // 建物指定が無ければ BaseSystem を返す
+    if (!bldg) {
+      const basePath = path.join(
+        FORM_BASE_ROOT,
+        "BaseSystem",
+        "form",
+        "form_base.json",
+      );
+      const raw = await fs.readFile(basePath, "utf-8");
+      const schema = JSON.parse(raw);
+      return NextResponse.json({ ok: true, schema });
+    }
+
+    // 建物フォルダ名を組み立て (<user>_<seq>_<bldg>)
+    const folderName = `${user}_${seq}_${bldg}`;
+    const formDir = path.join(
+      FORM_BASE_ROOT,
+      folderName,
+      "form",
+    );
+
+    // form_base_<bldg>_<seq>.json を読む
+    const filePath = path.join(
+      formDir,
+      `form_base_${bldg}_${seq}.json`,
+    );
+    const raw = await fs.readFile(filePath, "utf-8");
+    const schema = JSON.parse(raw);
+
     return NextResponse.json({ ok: true, schema });
   } catch (err: any) {
     console.error("[api/forms/read] error", err);
