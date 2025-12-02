@@ -8,7 +8,7 @@ type Props = {
   reportUrl?: string;
 };
 
-// 疑似進捗の全体時間（秒）
+// 疑似進捗の総時間（秒）
 const TOTAL_SECONDS = 37;
 
 export default function SubmitProgress({ reportUrl }: Props) {
@@ -32,37 +32,34 @@ export default function SubmitProgress({ reportUrl }: Props) {
   // 進捗率（0〜100%）
   const pct = Math.min(100, Math.round((elapsed / TOTAL_SECONDS) * 100));
 
-  // フェーズ別メッセージ（2〜4秒おきに変化）
+  // フェーズ別メッセージ
   let statusTitle = "";
   let statusDetail = "";
 
-  if (elapsed < 4) {
+  if (elapsed < 3) {
     statusTitle = "送信中";
     statusDetail = "点検内容をサーバーに送信しています。";
-  } else if (elapsed < 8) {
-    statusTitle = "入力内容を整理しています";
-    statusDetail = "日付・建物名・点検者名などの基本情報を整理しています。";
-  } else if (elapsed < 12) {
-    statusTitle = "AI が点検内容を解析中";
-    statusDetail = "各項目の入力内容から、重要なポイントを抽出しています。";
-  } else if (elapsed < 16) {
-    statusTitle = "報告書の構成を組み立てています";
-    statusDetail = "報告書の章立てと、どの項目をどこに載せるかを決めています。";
-  } else if (elapsed < 20) {
-    statusTitle = "各セクションの文章を生成中";
-    statusDetail = "異常箇所や所見の文章を自動で整えています。";
-  } else if (elapsed < 24) {
-    statusTitle = "表やレイアウトを調整中";
-    statusDetail = "Excel シートの表やレイアウトを整えています。";
-  } else if (elapsed < 28) {
+  } else if (elapsed < 7) {
+    statusTitle = "入力内容を解析中";
+    statusDetail = "AI が点検項目と回答内容を読み取り、整理しています。";
+  } else if (elapsed < 11) {
+    statusTitle = "異常・着目点を抽出中";
+    statusDetail = "必要に応じてコメントや注意点をピックアップしています。";
+  } else if (elapsed < 15) {
+    statusTitle = "報告書の下書きを生成中";
+    statusDetail = "報告書の文章と数値を自動で埋め込んでいます。";
+  } else if (elapsed < 19) {
+    statusTitle = "レイアウトを整えています";
+    statusDetail = "セル配置や見出しの体裁を整えています。";
+  } else if (elapsed < 23) {
     statusTitle = "最終チェック中";
     statusDetail = "入力漏れや不整合がないかを確認しています。";
-  } else if (elapsed < 32) {
-    statusTitle = "Excel ファイルを書き込み中";
-    statusDetail = "生成した内容を報告書ファイルに反映しています。";
-  } else if (elapsed < 37) {
-    statusTitle = "報告書を発行しています";
-    statusDetail = "OneDrive 上に報告書ファイルを保存しています。";
+  } else if (elapsed < 31) {
+    statusTitle = "OneDrive に保存中";
+    statusDetail = "完成した報告書ファイルを OneDrive に保存しています。";
+  } else if (elapsed < TOTAL_SECONDS) {
+    statusTitle = "共有リンクを発行中";
+    statusDetail = "報告書（Excel）を開くためのリンクを作成しています。";
   } else {
     statusTitle = "報告書が発行されました";
     statusDetail = "下記のリンクから報告書（Excel）を開いて内容をご確認ください。";

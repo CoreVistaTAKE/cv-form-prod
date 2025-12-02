@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
     const seqRaw = body.varSeq ?? body.seq ?? "";
     const seq = String(seqRaw || "").padStart(3, "0");
 
+    // シート名（ReportSheet）
     const sheet = (body.varSheet ?? body.sheet ?? "").toString().trim();
 
     if (!user || !bldg || !seq) {
@@ -39,7 +40,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (!sheet) {
-      // sheet を必須にする方針。旧クライアントは考慮しない前提。
       console.warn("[/api/forms/report-link] sheet is empty", {
         user,
         bldg,
@@ -56,7 +56,6 @@ export async function POST(req: NextRequest) {
       bldg,
       seq,
       sheet,
-      // Flow 互換フィールド
       varUser: user,
       varBldg: bldg,
       varSeq: seq,
@@ -85,7 +84,6 @@ export async function POST(req: NextRequest) {
         flowRes.status,
         json,
       );
-      // 404 などは「まだファイルが無い or パス不一致」を想定し、HTTP 200 で ok:false を返す
       return NextResponse.json(
         {
           ok: false,
@@ -122,7 +120,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         ok: true,
-        reportUrl: reportUrl,
+        reportUrl,
         reportFilePath: json?.reportFilePath,
       },
       { status: 200 },
