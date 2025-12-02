@@ -19,10 +19,10 @@ const RESERVED = new Set([
 ]);
 
 type WizardProps = {
-  user?: string;  // /fill の URL の user（例: FirstService）
-  bldg?: string;  // /fill の URL の bldg（例: テストビルB）
-  seq?: string;   // 3桁 Sseq（例: 001）
-  host?: string;  // 今回の Flow では未使用だが将来拡張用
+  user?: string; // /fill の URL の user（例: FirstService）
+  bldg?: string; // /fill の URL の bldg（例: テストビルB）
+  seq?: string;  // 3桁 Sseq（例: 001）
+  host?: string; // 今回の Flow では未使用だが将来拡張用
 };
 
 export function Wizard(props: WizardProps) {
@@ -45,8 +45,14 @@ export function Wizard(props: WizardProps) {
   const setValue = form.setValue;
   const watch = form.watch;
 
-  const infoIndex = useMemo(() => pages.findIndex((p) => p.type === "info"), [pages]);
-  const reviseIndex = useMemo(() => pages.findIndex((p) => p.type === "revise"), [pages]);
+  const infoIndex = useMemo(
+    () => pages.findIndex((p) => p.type === "info"),
+    [pages],
+  );
+  const reviseIndex = useMemo(
+    () => pages.findIndex((p) => p.type === "revise"),
+    [pages],
+  );
   const reviseListIndex = useMemo(
     () => pages.findIndex((p) => p.type === "reviseList"),
     [pages],
@@ -68,7 +74,10 @@ export function Wizard(props: WizardProps) {
     [pages],
   );
   const sectionIdxs = useMemo(
-    () => pages.map((p, i) => (p.type === "section" ? i : -1)).filter((i) => i >= 0),
+    () =>
+      pages
+        .map((p, i) => (p.type === "section" ? i : -1))
+        .filter((i) => i >= 0),
     [pages],
   );
   const lastSectionIndex = useMemo(
@@ -107,7 +116,9 @@ export function Wizard(props: WizardProps) {
         const raw = values["点検日"] as string | undefined;
         const base = toYYYYMMDD(fromISODateStringJST(raw).toDate()); // JSTでYYYYMMDD
         const rs = values["ReportSheet（タブ名）"] as string | undefined;
-        if (!rs || /^\d{8}(_\d+)?$/.test(rs)) setValue("ReportSheet（タブ名）", base);
+        if (!rs || /^\d{8}(_\d+)?$/.test(rs)) {
+          setValue("ReportSheet（タブ名）", base);
+        }
       }
     });
     return () => sub.unsubscribe();
@@ -251,42 +262,56 @@ export function Wizard(props: WizardProps) {
 
     // === 「報告書作成」ボタン押下時の処理 ===
     if (submit && completeIndex >= 0) {
+      const pollIntervalMs = 3000; // 3秒間隔
+      const maxAttempts = 20;      // 最大 20 回（≒ 1 分弱）
+
       // 完了ページへ遷移
       setIdx(completeIndex);
       setWorking(true);
       setReportUrl(undefined);
 
-      if (user && bldg) {
-        try {
-          const payload = {
-            user,
-            bldg,
-            seq: normalizedSeq,
-            date: dateISO,
-            sheet,
-            company,
-            building,
-            inspector,
-            groupId,
-            values,
-            answers,
-            // Flow 側互換用
-            varUser: user,
-            varBldg: bldg,
-            varSeq: normalizedSeq,
-            varDate: dateISO,
-            varSheet: sheet,
-            varCompany: company,
-            varBuilding: building,
-            varInspector: inspector,
-            varGroupId: groupId,
-            varValues: values,
-          };
+      if (!user || !bldg) {
+        console.log("[Wizard] user/bldg not set; skip Flow submit");
+        setWorking(false);
+        return;
+      }
 
-          const res = await fetch("/api/forms/submit", {
+      const payload = {
+        user,
+        bldg,
+        seq: normalizedSeq,
+        date: dateISO,
+        sheet,
+        company,
+        building,
+        inspector,
+        groupId,
+        values,
+        answers,
+        // Flow 側互換用
+        varUser: user,
+        varBldg: bldg,
+        varSeq: normalizedSeq,
+        varDate: dateISO,
+        varSheet: sheet,
+        varCompany: company,
+        varBuilding: building,
+        varInspector: inspector,
+        varGroupId: groupId,
+        varValues: values,
+      };
+
+      // /api/forms/report-link をポーリングして共有リンク取得
+      const pollReportLink = async (attempt: number) => {
+        try {
+          const res = await fetch("/api/forms/report-link", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              user,
+              bldg,
+              seq: normalizedSeq,
+            }),
           });
 
           const text = await res.text();
@@ -297,37 +322,77 @@ export function Wizard(props: WizardProps) {
             json = { raw: text };
           }
 
-          if (!res.ok || json?.ok === false) {
-            console.warn("[Wizard] submit flow error", res.status, json);
-          }
+          if (res.ok && json?.ok !== false) {
+            let urlFromFlow: string | undefined =
+              json.reportUrl ||
+              json.report_url ||
+              json.fileUrl ||
+              json.file_url ||
+              json.url;
 
-          // Flow から reportUrl を返してもらえればここで拾う
-          let urlFromFlow: string | undefined =
-            json.reportUrl ||
-            json.report_url ||
-            json.fileUrl ||
-            json.file_url ||
-            json.url;
+            if (!urlFromFlow && json.data) {
+              urlFromFlow =
+                json.data.reportUrl ||
+                json.data.report_url ||
+                json.data.fileUrl ||
+                json.data.file_url ||
+                json.data.url;
+            }
 
-          if (!urlFromFlow && json.data) {
-            urlFromFlow =
-              json.data.reportUrl ||
-              json.data.report_url ||
-              json.data.fileUrl ||
-              json.data.file_url ||
-              json.data.url;
-          }
-
-          if (typeof urlFromFlow === "string" && urlFromFlow.trim()) {
-            setReportUrl(urlFromFlow.trim());
+            if (typeof urlFromFlow === "string" && urlFromFlow.trim()) {
+              // 共有リンク取得成功
+              setReportUrl(urlFromFlow.trim());
+              setWorking(false);
+              return;
+            }
+          } else {
+            console.warn("[Wizard] report-link error", res.status, json);
           }
         } catch (e) {
-          console.warn("[Wizard] submit flow fetch failed", e);
-        } finally {
-          setWorking(false);
+          console.warn("[Wizard] report-link fetch failed", e);
         }
-      } else {
-        console.log("[Wizard] user/bldg not set; skip Flow submit");
+
+        // ここまで来たらまだ生成中 or 失敗
+        if (attempt >= maxAttempts) {
+          console.warn("[Wizard] report-link timeout");
+          setWorking(false);
+          return;
+        }
+
+        // 次のポーリングを予約
+        setTimeout(() => {
+          pollReportLink(attempt + 1);
+        }, pollIntervalMs);
+      };
+
+      try {
+        // ① 報告書作成フロー起動（非同期：/api/forms/submit は 202 Accepted を返すだけ）
+        const res = await fetch("/api/forms/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const text = await res.text();
+        let json: any = {};
+        try {
+          json = text ? JSON.parse(text) : {};
+        } catch {
+          json = { raw: text };
+        }
+
+        if (!res.ok || json?.ok === false) {
+          console.warn("[Wizard] submit flow error", res.status, json);
+          setWorking(false);
+          return;
+        }
+
+        // ② フロー起動を受け付けたら、3秒待ってから共有リンク取得フローを叩き始める
+        setTimeout(() => {
+          pollReportLink(1);
+        }, pollIntervalMs);
+      } catch (e) {
+        console.warn("[Wizard] submit flow fetch failed", e);
         setWorking(false);
       }
     }
@@ -559,13 +624,11 @@ export function Wizard(props: WizardProps) {
                         <option value="">
                           {"異常がある場合は選択してください"}
                         </option>
-                        {(f.options || [])
-                          .slice(0, 10)
-                          .map((opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
+                        {(f.options || []).slice(0, 10).map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
                       </select>
                     )}
                   </div>
@@ -675,7 +738,9 @@ function ReviseBlock({
 }) {
   const { meta } = useBuilderStore();
   const responses = useResponsesStore();
-  const [reviseBuilding, setReviseBuilding] = useState<string>(meta.fixedBuilding || "");
+  const [reviseBuilding, setReviseBuilding] = useState<string>(
+    meta.fixedBuilding || "",
+  );
   const [reviseInspector, setReviseInspector] = useState<string>("");
   const [reviseRespId, setReviseRespId] = useState<string>("");
 
@@ -784,7 +849,9 @@ function ReviseBlock({
       <div className="flex items-center justify-between mt-3">
         <button
           className="btn-red-light btn-nav"
-          onClick={() => setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)}
+          onClick={() =>
+            setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)
+          }
         >
           ← 戻る
         </button>
@@ -793,7 +860,9 @@ function ReviseBlock({
           disabled={!reviseRespId}
           onClick={() => loadForEdit(reviseRespId!)}
         >
-          {indices.reviseListIndex >= 0 ? "修正する回答ページへ →" : "回答の修正へ →"}
+          {indices.reviseListIndex >= 0
+            ? "修正する回答ページへ →"
+            : "回答の修正へ →"}
         </button>
       </div>
     </>
@@ -809,7 +878,9 @@ function ReviseListBlock({ setIdx, indices }: { setIdx: any; indices: any }) {
       <div className="flex items-center justify-between mt-3">
         <button
           className="btn-blue-light btn-nav"
-          onClick={() => setIdx(indices.reviseIndex >= 0 ? indices.reviseIndex : 0)}
+          onClick={() =>
+            setIdx(indices.reviseIndex >= 0 ? indices.reviseIndex : 0)
+          }
         >
           ← 戻る
         </button>
@@ -817,7 +888,9 @@ function ReviseListBlock({ setIdx, indices }: { setIdx: any; indices: any }) {
           className="btn-blue btn-nav"
           onClick={() =>
             setIdx(
-              indices.basicIndex >= 0 ? indices.basicIndex : indices.reviseIndex + 1,
+              indices.basicIndex >= 0
+                ? indices.basicIndex
+                : indices.reviseIndex + 1,
             )
           }
         >
@@ -828,7 +901,14 @@ function ReviseListBlock({ setIdx, indices }: { setIdx: any; indices: any }) {
   );
 }
 
-function BasicBlock({ setIdx, indices, register, pages, fields, validateCurrent }: any) {
+function BasicBlock({
+  setIdx,
+  indices,
+  register,
+  pages,
+  fields,
+  validateCurrent,
+}: any) {
   const pageId = pages[indices.basicIndex]?.id;
   const fs = fields.filter((f: any) => f.pageId === pageId);
   return (
@@ -874,7 +954,9 @@ function BasicBlock({ setIdx, indices, register, pages, fields, validateCurrent 
       <div className="flex items-center justify-between mt-3">
         <button
           className="btn-red-light btn-nav"
-          onClick={() => setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)}
+          onClick={() =>
+            setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)
+          }
         >
           ← 戻る
         </button>
@@ -897,10 +979,7 @@ function BasicBlock({ setIdx, indices, register, pages, fields, validateCurrent 
  * - /api/forms/previous 経由で meta.previousFromExcel に入っている情報を使う前提
  * - item.reportUrl / item.fileName / item.lastModified あたりを読みに行く
  */
-function PrevGroupsView({
-  meta,
-  watchBld,
-}: any) {
+function PrevGroupsView({ meta, watchBld }: any) {
   // 建物名（固定値 or 入力中の値）
   const building = (meta.fixedBuilding || watchBld || "").trim();
 
@@ -918,19 +997,16 @@ function PrevGroupsView({
 
   // ファイル名候補
   const fileName: string | undefined =
-    (prev &&
-      (prev.fileName ||
-        prev.name ||
-        prev.displayName ||
-        prev.Name)) ||
+    prev &&
+    (prev.fileName || prev.name || prev.displayName || prev.Name) ||
     undefined;
 
   // 更新日時候補
   const lastModified: string | undefined =
-    (prev &&
-      (prev.lastModified ||
-        prev.lastModifiedDateTime ||
-        prev.modified)) ||
+    prev &&
+    (prev.lastModified ||
+      prev.lastModifiedDateTime ||
+      prev.modified) ||
     undefined;
 
   if (!prev) {

@@ -1,9 +1,8 @@
 // app/api/forms/submit/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-// Flow 呼び出し先
 // ProcessFormSubmission の URL を使う
-const FLOW_URL =process.env.FLOW_PROCESS_FORM_SUBMISSION_URL;
+const FLOW_URL = process.env.FLOW_PROCESS_FORM_SUBMISSION_URL;
 
 type Answer = {
   key: string;
@@ -39,16 +38,19 @@ function toAnswerArray(src: any): Answer[] {
   return [];
 }
 
+// 明示的に Node ランタイム & 非キャッシュ
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   if (!FLOW_URL) {
     console.error(
-      "[/api/forms/submit] no Flow URL: FLOW_APPEND_ANSWER_AND_RUN_PROCESS_FORM_SUBMISSION_URL / FLOW_PROCESS_FORM_SUBMISSION_URL are both empty."
+      "[/api/forms/submit] no Flow URL: FLOW_PROCESS_FORM_SUBMISSION_URL is empty."
     );
     return NextResponse.json(
       {
         ok: false,
-        reason:
-          "FLOW_APPEND_ANSWER_AND_RUN_PROCESS_FORM_SUBMISSION_URL または FLOW_PROCESS_FORM_SUBMISSION_URL がサーバー側で設定されていません。",
+        reason: "FLOW_PROCESS_FORM_SUBMISSION_URL がサーバー側で設定されていません。",
       },
       { status: 500 }
     );
@@ -96,62 +98,47 @@ export async function POST(req: NextRequest) {
       answers,
     };
 
-    console.log("[/api/forms/submit] calling Flow", {
+    console.log("[/api/forms/submit] calling Flow (fire-and-forget)", {
       user,
       bldg,
       seq,
       answersCount: answers.length,
-      target:
-        process.env.FLOW_APPEND_ANSWER_AND_RUN_PROCESS_FORM_SUBMISSION_URL
-          ? "AppendAnswerAndRunProcessFormSubmission"
-          : "ProcessFormSubmission",
     });
 
-    // --- 2) Flow を同期呼び出ししてレスポンスを受け取る ------------------
-    const flowRes = await fetch(FLOW_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(forwardBody),
-    });
+    // --- 2) Flow を「投げっぱなし」で起動 --------------------------
+    //    → ここを await しないので Heroku の 30 秒制限に引っかからない
+    void (async () => {
+      try {
+        const flowRes = await fetch(FLOW_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(forwardBody),
+        });
 
-    const flowText = await flowRes.text();
-    let flowJson: any = {};
-    try {
-      flowJson = flowText ? JSON.parse(flowText) : {};
-    } catch (e) {
-      console.warn(
-        "[/api/forms/submit] Flow response JSON parse failed",
-        e,
-        flowText
-      );
-    }
+        const flowText = await flowRes.text();
 
-    if (!flowRes.ok || flowJson?.ok === false) {
-      console.warn(
-        "[/api/forms/submit] Flow returned error",
-        flowRes.status,
-        flowJson
-      );
-    }
+        if (!flowRes.ok) {
+          console.warn(
+            "[/api/forms/submit] background Flow error",
+            flowRes.status,
+            flowText
+          );
+        } else {
+          console.log(
+            "[/api/forms/submit] background Flow completed",
+            flowRes.status
+          );
+        }
+      } catch (e) {
+        console.error(
+          "[/api/forms/submit] background Flow call failed",
+          e
+        );
+      }
+    })();
 
-    // --- 3) Flow のレスポンスから reportUrl / traceId を拾う -------------
-    const reportUrl: string | undefined =
-      (typeof flowJson.reportUrl === "string" && flowJson.reportUrl) ||
-      (typeof flowJson.report_url === "string" && flowJson.report_url) ||
-      (typeof flowJson.fileUrl === "string" && flowJson.fileUrl) ||
-      (typeof flowJson.file_url === "string" && flowJson.file_url) ||
-      (typeof flowJson?.body?.reportUrl === "string" &&
-        flowJson.body.reportUrl) ||
-      (typeof flowJson?.data?.reportUrl === "string" &&
-        flowJson.data.reportUrl) ||
-      undefined;
-
-    const traceId: string | undefined =
-      (typeof flowJson.traceId === "string" && flowJson.traceId) ||
-      (typeof flowJson?.body?.traceId === "string" && flowJson.body.traceId) ||
-      undefined;
-
-    // --- 4) フロントに返却 ---------------------------------------------
+    // --- 3) フロントには即座に「受付完了」だけ返す ------------------
+    // reportUrl はここでは返さない（後で /api/forms/report-link から取る）
     return NextResponse.json(
       {
         ok: true,
@@ -159,10 +146,8 @@ export async function POST(req: NextRequest) {
         user,
         bldg,
         seq,
-        reportUrl,
-        traceId,
       },
-      { status: 200 }
+      { status: 202 } // 202 Accepted にしておくと「非同期処理中」が伝わりやすい
     );
   } catch (err: any) {
     console.error("[/api/forms/submit] error", err);
