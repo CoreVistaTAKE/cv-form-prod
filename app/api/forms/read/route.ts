@@ -1,148 +1,206 @@
 // app/api/forms/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import dns from "node:dns";
 
-const FLOW_GET_FORM_SCHEMA_URL =
-  process.env.FLOW_GET_FORM_SCHEMA_URL || "";
+// IPv6で詰まる環境対策：IPv4優先（Heroku/Undici/LogicApps系で刺さることがある）
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch {
+  // ignore
+}
 
-// 例: "FirstService_001_テストビルB"
-const BUILDING_TOKEN_RE = /^([A-Za-z0-9]+)_(\d{3})_(.+)$/;
+const FLOW_URL =
+  process.env.FLOW_READ_FORM_URL ||
+  process.env.FLOW_FORMS_READ_URL ||
+  process.env.FLOW_GET_FORM_READ_URL;
 
-/**
- * フォーム定義を OneDrive から取得する API
- *
- * 入口パラメータ（どれも任意）:
- *   varUser / user  … テナントID (例: "FirstService")
- *   varBldg / bldg  … 建物名 もしくは フォルダ名
- *                      - "テストビルB"
- *                      - "FirstService_001_テストビルB"
- *   varSeq  / seq   … "001" 形式の通番（未指定なら 001）
- *
- * 処理フロー:
- *   1) user / bldgRaw / seq を正規化
- *   2) bldgRaw が "FirstService_001_テストビルB" 形式なら
- *        → 建物名 = "テストビルB" / seq = "001"
- *   3) Flow (GetFormSchemaFromOneDrive) を呼び出し
- *        varUser = user
- *        varBldg = 建物名
- *        varSeq  = seq (3桁)
- *   4) Flow 応答から schema を取り出して返却
- */
-export async function POST(req: NextRequest) {
+// 明示的に Node ランタイム & 非キャッシュ
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function safeUrl(raw: string) {
   try {
-    const body = (await req.json().catch(() => ({}))) as any;
+    const u = new URL(raw);
+    // sig 等のクエリはログに出さない
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "<invalid-url>";
+  }
+}
 
-    const user = (
-      body.varUser ||
-      body.user ||
-      process.env.NEXT_PUBLIC_DEFAULT_USER ||
-      "FirstService"
-    )
-      .toString()
-      .trim();
+async function fetchJsonWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { attempts: number; timeoutMs: number; backoffMs: number },
+) {
+  let lastErr: any;
 
-    const bldgRaw = (body.varBldg || body.bldg || "")
-      .toString()
-      .trim();
+  for (let attempt = 1; attempt <= opts.attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort(new Error("fetch_timeout"));
+    }, opts.timeoutMs);
 
-    // seq は数字以外なら 001 にする
-    let seqRaw = (body.varSeq || body.seq || "").toString();
-    if (!/^\d+$/.test(seqRaw)) seqRaw = "001";
-    let seq = seqRaw.padStart(3, "0");
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        cache: "no-store",
+        redirect: "follow",
+      } as any);
 
-    // ===== bldgRaw から建物名と seq を抽出 =====
-    let buildingName = bldgRaw;
-
-    const m = BUILDING_TOKEN_RE.exec(bldgRaw);
-    if (m) {
-      // 例: "FirstService_001_テストビルB"
-      // m[1] = "FirstService", m[2] = "001", m[3] = "テストビルB"
-      buildingName = m[3];
-      // URL 側で seq 指定が無ければ、トークンの seq を採用
-      if (!body.varSeq && !body.seq) {
-        seq = m[2].padStart(3, "0");
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { raw: text };
       }
+
+      // 429/5xx はリトライ対象にする（Flow/コネクタの一時不安定対策）
+      if (!res.ok && (res.status === 429 || (res.status >= 500 && res.status <= 599))) {
+        if (attempt < opts.attempts) {
+          await sleep(opts.backoffMs * attempt);
+          continue;
+        }
+      }
+
+      return { res, json };
+    } catch (e: any) {
+      lastErr = e;
+
+      // ネットワーク系はリトライ
+      if (attempt < opts.attempts) {
+        await sleep(opts.backoffMs * attempt);
+        continue;
+      }
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastErr;
+}
+
+export async function POST(req: NextRequest) {
+  if (!FLOW_URL) {
+    console.error("[api/forms/read] no Flow URL (env missing)");
+    return NextResponse.json(
+      {
+        ok: false,
+        reason:
+          "FLOW_READ_FORM_URL (または FLOW_FORMS_READ_URL / FLOW_GET_FORM_READ_URL) が未設定です。",
+      },
+      { status: 500 },
+    );
+  }
+
+  // URLバリデーション（変なURLだと fetch failed になるので先に落とす）
+  try {
+    // eslint-disable-next-line no-new
+    new URL(FLOW_URL);
+  } catch {
+    console.error("[api/forms/read] invalid Flow URL:", FLOW_URL);
+    return NextResponse.json(
+      { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
+      { status: 500 },
+    );
+  }
+
+  try {
+    const body: any = await req.json().catch(() => ({}));
+
+    // 受け取りゆれ吸収（fill 側の実装差分に強くする）
+    const user = (body.varUser ?? body.user ?? "").toString().trim();
+    const bldg = (body.varBldg ?? body.bldg ?? "").toString().trim();
+    const seqRaw = body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "";
+    const seq = String(seqRaw || "").padStart(3, "0");
+
+    const missing: string[] = [];
+    if (!user) missing.push("user");
+    if (!bldg) missing.push("bldg");
+    if (!seq) missing.push("seq");
+
+    if (missing.length > 0) {
+      const reason = `missing required fields: ${missing.join(", ")}`;
+      console.warn("[api/forms/read] bad request:", reason, { user, bldg, seq });
+      return NextResponse.json({ ok: false, reason }, { status: 400 });
     }
 
-    if (!FLOW_GET_FORM_SCHEMA_URL) {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason:
-            "FLOW_GET_FORM_SCHEMA_URL が未設定のため、OneDrive からフォーム定義を取得できません。",
-        },
-        { status: 500 },
-      );
-    }
+    const forwardBody = {
+      ...body,
+      user,
+      bldg,
+      seq,
+      varUser: user,
+      varBldg: bldg,
+      varSeq: seq,
+    };
 
-    // ===== Power Automate (GetFormSchemaFromOneDrive) 呼び出し =====
-    const flowRes = await fetch(FLOW_GET_FORM_SCHEMA_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({
-        varUser: user,
-        varBldg: buildingName, // ← フォルダ名ではなく建物名だけ
-        varSeq: seq,           // ← 常に 3 桁 ("001" など)
-      }),
+    console.log("[api/forms/read] calling Flow", {
+      user,
+      bldg,
+      seq,
+      url: safeUrl(FLOW_URL),
     });
 
-    const text = await flowRes.text();
+    const { res: flowRes, json } = await fetchJsonWithRetry(
+      FLOW_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(forwardBody),
+      },
+      {
+        attempts: 3, // ここは効きます（瞬断/混雑）
+        timeoutMs: 10_000, // 1回10秒
+        backoffMs: 600, // 0.6s, 1.2s, 1.8s
+      },
+    );
 
+    // Flowが 200 を返す設計が多いので、ここは素直に透過
+    // 「ok が無い」なら付与しておく（呼び出し側が ok 前提の場合の保険）
+    if (flowRes.ok && (json?.ok === undefined || json?.ok === null)) {
+      json.ok = true;
+    }
+
+    // upstream が非200の場合でも、理由は JSON に入れて返す（デバッグしやすく）
     if (!flowRes.ok) {
       return NextResponse.json(
         {
           ok: false,
-          reason: `Flow HTTP ${flowRes.status}: ${text}`,
+          reason: json?.reason || `upstream_http_${flowRes.status}`,
+          upstreamStatus: flowRes.status,
+          upstream: json,
         },
-        { status: 500 },
+        { status: 502 },
       );
     }
 
-    let payload: any = {};
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      return NextResponse.json(
-        {
-          ok: false,
-          reason: "Flow 応答 JSON の parse に失敗しました。",
-        },
-        { status: 500 },
-      );
-    }
-
-    // ===== Flow 応答から schema を抽出 =====
-    let schema: any;
-
-    // ① 推奨: { ok:true, schema:{meta,pages,fields} }
-    if (payload?.ok && payload.schema) {
-      schema = payload.schema;
-
-      // ② { ok:true, data:{ schema:{...} } }
-    } else if (payload?.ok && payload.data?.schema) {
-      schema = payload.data.schema;
-
-      // ③ スキーマ本体そのまま: {meta,pages,fields}
-    } else if (
-      payload?.meta &&
-      Array.isArray(payload.pages) &&
-      Array.isArray(payload.fields)
-    ) {
-      schema = payload;
-    } else {
-      const reason =
-        payload?.reason ||
-        payload?.error ||
-        "Flow 応答に schema が含まれていません。";
-      return NextResponse.json({ ok: false, reason }, { status: 500 });
-    }
-
-    return NextResponse.json({ ok: true, schema });
+    return NextResponse.json(json, { status: 200 });
   } catch (err: any) {
+    const cause = err?.cause;
+    const code = cause?.code || err?.code;
+    const message = err?.message || String(err);
+
     console.error("[api/forms/read] error", err);
+
+    // 「fetch failed」だけ返すと詰むので、最低限 code と cause を返す
     return NextResponse.json(
       {
         ok: false,
-        reason: err?.message || String(err),
+        reason: message,
+        code,
+        cause: cause
+          ? {
+              code: cause.code,
+              message: cause.message,
+              name: cause.name,
+            }
+          : undefined,
       },
       { status: 500 },
     );
