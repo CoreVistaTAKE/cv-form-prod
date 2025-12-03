@@ -12,7 +12,8 @@ try {
 const FLOW_URL =
   process.env.FLOW_READ_FORM_URL ||
   process.env.FLOW_FORMS_READ_URL ||
-  process.env.FLOW_GET_FORM_READ_URL;
+  process.env.FLOW_GET_FORM_READ_URL ||
+  process.env.FLOW_GET_FORM_SCHEMA_URL;
 
 // 明示的に Node ランタイム & 非キャッシュ
 export const runtime = "nodejs";
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         reason:
-          "FLOW_READ_FORM_URL (または FLOW_FORMS_READ_URL / FLOW_GET_FORM_READ_URL) が未設定です。",
+          "FLOW_READ_FORM_URL (または FLOW_FORMS_READ_URL / FLOW_GET_FORM_READ_URL / FLOW_GET_FORM_SCHEMA_URL) が未設定です。",
       },
       { status: 500 },
     );
