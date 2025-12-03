@@ -107,24 +107,38 @@ export function Wizard(props: WizardProps) {
     applyTheme(meta.theme);
   }, [meta.theme]);
 
-  // ▼ 初期値：点検日とReportSheetはJST（東京）で統一
+  // ▼ 初期値：点検日と ReportSheet は JST（東京）で統一（sheet は YYMMDD） ★ここ修正
   useEffect(() => {
     const defaultISO = isoDateTokyo(); // JST "YYYY-MM-DD"
     const cur = getValues("点検日") as string | undefined;
     if (!cur) {
+      // 初期点検日をセット
       setValue("点検日", defaultISO);
-      setValue("ReportSheet（タブ名）", toYYYYMMDD());
+
+      // toYYYYMMDD() が 20251203 形式なら、先頭2桁を落として 251203 にする
+      const baseYYYYMMDD = toYYYYMMDD();
+      const baseYYMMDD = baseYYYYMMDD.slice(2); // "20251203" -> "251203"
+      setValue("ReportSheet（タブ名）", baseYYMMDD);
     }
+
     const sub = watch((values: any, ctx: any) => {
       if (ctx?.name === "点検日") {
         const raw = values["点検日"] as string | undefined;
-        const base = toYYYYMMDD(fromISODateStringJST(raw).toDate()); // JSTでYYYYMMDD
+        if (!raw) return;
+
+        const baseYYYYMMDD = toYYYYMMDD(
+          fromISODateStringJST(raw).toDate(),
+        ); // JSTでYYYYMMDD (20251203)
+        const baseYYMMDD = baseYYYYMMDD.slice(2); // 251203
+
         const rs = values["ReportSheet（タブ名）"] as string | undefined;
-        if (!rs || /^\d{8}(_\d+)?$/.test(rs)) {
-          setValue("ReportSheet（タブ名）", base);
+        // sheet が未設定、または「6桁(+_n)」形式なら自動更新を許可
+        if (!rs || /^\d{6}(_\d+)?$/.test(rs)) {
+          setValue("ReportSheet（タブ名）", baseYYMMDD);
         }
       }
     });
+
     return () => sub.unsubscribe();
   }, [watch, setValue, getValues]);
 
@@ -402,7 +416,7 @@ export function Wizard(props: WizardProps) {
           return;
         }
 
-        // ② フロー起動を受け付けたら、25秒待ってから report-link を叩き始める
+        // ② フロー起動を受け付けたら、25秒待ってから共有リンク取得フローを叩き始める
         setTimeout(() => {
           void pollReportLink(1);
         }, firstDelayMs);
