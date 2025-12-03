@@ -1,23 +1,29 @@
 // app/api/forms/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import https from "node:https";
 import dns from "node:dns";
 
-// IPv6で詰まる環境対策：IPv4優先（Heroku/Undici/LogicApps系で刺さることがある）
+// 明示的に Node ランタイム & 非キャッシュ
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Heroku/Undici/LogicApps 系で IPv6 が刺さることがあるので念のため
 try {
   dns.setDefaultResultOrder("ipv4first");
 } catch {
   // ignore
 }
 
+// Flow URL（環境差分に強くする）
 const FLOW_URL =
   process.env.FLOW_READ_FORM_URL ||
   process.env.FLOW_FORMS_READ_URL ||
   process.env.FLOW_GET_FORM_READ_URL ||
-  process.env.FLOW_GET_FORM_SCHEMA_URL;
+  process.env.FLOW_GET_FORM_SCHEMA_URL ||
+  "";
 
-// 明示的に Node ランタイム & 非キャッシュ
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// 例: "FirstService_001_テストビルB"
+const BUILDING_TOKEN_RE = /^([A-Za-z0-9]+)_(\d{3})_(.+)$/;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,28 +37,72 @@ function safeUrl(raw: string) {
   }
 }
 
-async function fetchJsonWithRetry(
+/**
+ * fetch(undici) を避けて、https 直叩き（IPv4固定）で POST JSON。
+ * powerplatform.com への接続が undici で ETIMEDOUT になる環境があるため。
+ */
+async function httpsPostJsonIPv4(urlStr: string, payload: any, timeoutMs: number) {
+  const u = new URL(urlStr);
+  const body = JSON.stringify(payload ?? {});
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body).toString(),
+  };
+
+  return await new Promise<{
+    status: number;
+    headers: https.IncomingHttpHeaders;
+    text: string;
+  }>((resolve, reject) => {
+    const req = https.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port ? Number(u.port) : 443,
+        path: `${u.pathname}${u.search}`,
+        method: "POST",
+        headers,
+        family: 4, // ★ IPv4固定（重要）
+      } as any,
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode || 0,
+            headers: res.headers,
+            text: data,
+          });
+        });
+      },
+    );
+
+    req.on("error", (e) => reject(e));
+
+    req.setTimeout(timeoutMs, () => {
+      const err: any = new Error("request_timeout");
+      err.code = "ETIMEDOUT";
+      req.destroy(err);
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+async function postJsonWithRetry(
   url: string,
-  init: RequestInit,
+  payload: any,
   opts: { attempts: number; timeoutMs: number; backoffMs: number },
 ) {
   let lastErr: any;
 
   for (let attempt = 1; attempt <= opts.attempts; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort(new Error("fetch_timeout"));
-    }, opts.timeoutMs);
-
     try {
-      const res = await fetch(url, {
-        ...init,
-        signal: controller.signal,
-        cache: "no-store",
-        redirect: "follow",
-      } as any);
+      const { status, text } = await httpsPostJsonIPv4(url, payload, opts.timeoutMs);
 
-      const text = await res.text();
+      // ここで JSON パース
       let json: any = {};
       try {
         json = text ? JSON.parse(text) : {};
@@ -60,15 +110,15 @@ async function fetchJsonWithRetry(
         json = { raw: text };
       }
 
-      // 429/5xx はリトライ対象にする（Flow/コネクタの一時不安定対策）
-      if (!res.ok && (res.status === 429 || (res.status >= 500 && res.status <= 599))) {
+      // 429/5xx はリトライ対象（Flow/コネクタの一時不安定対策）
+      if (status === 429 || (status >= 500 && status <= 599)) {
         if (attempt < opts.attempts) {
           await sleep(opts.backoffMs * attempt);
           continue;
         }
       }
 
-      return { res, json };
+      return { status, json, rawText: text };
     } catch (e: any) {
       lastErr = e;
 
@@ -78,17 +128,24 @@ async function fetchJsonWithRetry(
         continue;
       }
       break;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
   throw lastErr;
 }
 
+/**
+ * フォーム定義を OneDrive から取得する API
+ *
+ * 入口パラメータ（どれも任意）:
+ *   varUser / user  … テナントID (例: "FirstService")
+ *   varBldg / bldg  … 建物名 もしくは フォルダ名
+ *                      - "テストビルB"
+ *                      - "FirstService_001_テストビルB"
+ *   varSeq  / seq / Sseq … "001" 形式の通番（未指定なら 001）
+ */
 export async function POST(req: NextRequest) {
   if (!FLOW_URL) {
-    console.error("[api/forms/read] no Flow URL (env missing)");
     return NextResponse.json(
       {
         ok: false,
@@ -99,12 +156,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // URLバリデーション（変なURLだと fetch failed になるので先に落とす）
+  // URLバリデーション（変なURLだと接続で詰むので先に落とす）
   try {
     // eslint-disable-next-line no-new
     new URL(FLOW_URL);
   } catch {
-    console.error("[api/forms/read] invalid Flow URL:", FLOW_URL);
     return NextResponse.json(
       { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
       { status: 500 },
@@ -112,94 +168,130 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body: any = await req.json().catch(() => ({}));
+    const body = (await req.json().catch(() => ({}))) as any;
 
-    // 受け取りゆれ吸収（fill 側の実装差分に強くする）
-    const user = (body.varUser ?? body.user ?? "").toString().trim();
-    const bldg = (body.varBldg ?? body.bldg ?? "").toString().trim();
-    const seqRaw = body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "";
-    const seq = String(seqRaw || "").padStart(3, "0");
+    const user = (
+      body.varUser ||
+      body.user ||
+      process.env.NEXT_PUBLIC_DEFAULT_USER ||
+      "FirstService"
+    )
+      .toString()
+      .trim();
 
-    const missing: string[] = [];
-    if (!user) missing.push("user");
-    if (!bldg) missing.push("bldg");
-    if (!seq) missing.push("seq");
+    const bldgRaw = (body.varBldg || body.bldg || "").toString().trim();
 
-    if (missing.length > 0) {
-      const reason = `missing required fields: ${missing.join(", ")}`;
-      console.warn("[api/forms/read] bad request:", reason, { user, bldg, seq });
-      return NextResponse.json({ ok: false, reason }, { status: 400 });
+    // seq は揺れ吸収（/fill?Sseq=001 対応）
+    let seqRaw = (body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "").toString();
+    if (!/^\d+$/.test(seqRaw)) seqRaw = "001";
+    let seq = seqRaw.padStart(3, "0");
+
+    // ===== bldgRaw から建物名と seq を抽出 =====
+    let buildingName = bldgRaw;
+
+    const m = BUILDING_TOKEN_RE.exec(bldgRaw);
+    if (m) {
+      // 例: "FirstService_001_テストビルB"
+      buildingName = m[3];
+      // URL 側で seq 指定が無ければ、トークンの seq を採用
+      if (!body.varSeq && !body.seq && !body.Sseq && !body.sseq) {
+        seq = m[2].padStart(3, "0");
+      }
     }
 
-    const forwardBody = {
-      ...body,
-      user,
-      bldg,
-      seq,
-      varUser: user,
-      varBldg: bldg,
-      varSeq: seq,
-    };
+    if (!user || !buildingName || !seq) {
+      return NextResponse.json(
+        { ok: false, reason: "user / bldg / seq が不足しています。" },
+        { status: 400 },
+      );
+    }
 
     console.log("[api/forms/read] calling Flow", {
       user,
-      bldg,
+      bldg: buildingName,
       seq,
       url: safeUrl(FLOW_URL),
     });
 
-    const { res: flowRes, json } = await fetchJsonWithRetry(
+    // ===== Power Automate 呼び出し（IPv4固定 + リトライ）=====
+    const { status, json, rawText } = await postJsonWithRetry(
       FLOW_URL,
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(forwardBody),
+        // Flow 側互換
+        varUser: user,
+        varBldg: buildingName,
+        varSeq: seq,
+        // 正規化済みも同梱（将来の Flow 変更に強い）
+        user,
+        bldg: buildingName,
+        seq,
+        ...body,
       },
       {
-        attempts: 3, // ここは効きます（瞬断/混雑）
-        timeoutMs: 10_000, // 1回10秒
+        attempts: 3,
+        timeoutMs: 12_000, // 1回12秒
         backoffMs: 600, // 0.6s, 1.2s, 1.8s
       },
     );
 
-    // Flowが 200 を返す設計が多いので、ここは素直に透過
-    // 「ok が無い」なら付与しておく（呼び出し側が ok 前提の場合の保険）
-    if (flowRes.ok && (json?.ok === undefined || json?.ok === null)) {
-      json.ok = true;
-    }
-
-    // upstream が非200の場合でも、理由は JSON に入れて返す（デバッグしやすく）
-    if (!flowRes.ok) {
+    if (status < 200 || status >= 300) {
       return NextResponse.json(
         {
           ok: false,
-          reason: json?.reason || `upstream_http_${flowRes.status}`,
-          upstreamStatus: flowRes.status,
+          reason: json?.reason || `Flow HTTP ${status}`,
+          upstreamStatus: status,
           upstream: json,
+          upstreamRaw: typeof json?.raw === "string" ? json.raw : rawText,
         },
         { status: 502 },
       );
     }
 
-    return NextResponse.json(json, { status: 200 });
-  } catch (err: any) {
-    const cause = err?.cause;
-    const code = cause?.code || err?.code;
-    const message = err?.message || String(err);
+    // ===== Flow 応答から schema を抽出（旧実装の互換維持）=====
+    let schema: any;
 
+    // ① 推奨: { ok:true, schema:{meta,pages,fields} }
+    if (json?.ok && json.schema) {
+      schema = json.schema;
+
+      // ② { ok:true, data:{ schema:{...} } }
+    } else if (json?.ok && json.data?.schema) {
+      schema = json.data.schema;
+
+      // ③ スキーマ本体そのまま: {meta,pages,fields}
+    } else if (json?.meta && Array.isArray(json.pages) && Array.isArray(json.fields)) {
+      schema = json;
+
+      // ④ たまに body に入れて返す Flow があるケース（保険）
+    } else if (
+      json?.body?.meta &&
+      Array.isArray(json.body.pages) &&
+      Array.isArray(json.body.fields)
+    ) {
+      schema = json.body;
+    } else if (json?.body?.ok && json.body.schema) {
+      schema = json.body.schema;
+    } else {
+      const reason =
+        json?.reason || json?.error || "Flow 応答に schema が含まれていません。";
+      return NextResponse.json({ ok: false, reason, upstream: json }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, schema }, { status: 200 });
+  } catch (err: any) {
+    const code = err?.code || err?.cause?.code;
     console.error("[api/forms/read] error", err);
 
-    // 「fetch failed」だけ返すと詰むので、最低限 code と cause を返す
     return NextResponse.json(
       {
         ok: false,
-        reason: message,
+        reason: err?.message || String(err),
         code,
-        cause: cause
+        cause: err?.cause
           ? {
-              code: cause.code,
-              message: cause.message,
-              name: cause.name,
+              code: err.cause.code,
+              message: err.cause.message,
+              name: err.cause.name,
             }
           : undefined,
       },
