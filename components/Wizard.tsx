@@ -287,8 +287,8 @@ export function Wizard(props: WizardProps) {
 
     // === 「報告書作成」ボタン押下時の処理 ===
     if (submit && completeIndex >= 0) {
-      // 25秒待ってから、3秒間隔で最大 5 回ポーリング
-      const firstDelayMs = 25_000;
+      // ★ 送信から27秒後に初回ポーリング、3秒間隔で最大5回
+      const firstDelayMs = 27_000;
       const pollIntervalMs = 3_000;
       const maxAttempts = 5;
 
@@ -334,12 +334,15 @@ export function Wizard(props: WizardProps) {
           const res = await fetch("/api/forms/report-link", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            // ★ sheet/varSheet は送らない（sheetKey と衝突するため）
             body: JSON.stringify({
               user,
               bldg,
               seq: normalizedSeq,
-              sheet,
-              varSheet: sheet,
+              // 互換
+              varUser: user,
+              varBldg: bldg,
+              varSeq: normalizedSeq,
             }),
           });
 
@@ -351,44 +354,46 @@ export function Wizard(props: WizardProps) {
             json = { raw: text };
           }
 
-          if (res.ok && json?.ok !== false) {
-            let urlFromFlow: string | undefined =
-              json.reportUrl ||
-              json.report_url ||
-              json.fileUrl ||
-              json.file_url ||
-              json.url;
+          const urlFromServer: string | undefined =
+            json.reportUrl ||
+            json.report_url ||
+            json.fileUrl ||
+            json.file_url ||
+            json.url ||
+            json?.data?.reportUrl ||
+            json?.data?.report_url ||
+            json?.data?.fileUrl ||
+            json?.data?.file_url ||
+            json?.data?.url;
 
-            if (!urlFromFlow && json.data) {
-              urlFromFlow =
-                json.data.reportUrl ||
-                json.data.report_url ||
-                json.data.fileUrl ||
-                json.data.file_url ||
-                json.data.url;
-            }
+          if (typeof urlFromServer === "string" && urlFromServer.trim()) {
+            setReportUrl(urlFromServer.trim());
+            setWorking(false);
+            return;
+          }
 
-            if (typeof urlFromFlow === "string" && urlFromFlow.trim()) {
-              // 共有リンク取得成功 → ここで終了
-              setReportUrl(urlFromFlow.trim());
-              setWorking(false);
-              return;
-            }
-          } else {
-            console.warn("[Wizard] report-link error", res.status, json);
+          // ★ リトライ対象の reason は静かに継続（正常系の「まだ」）
+          const reason = String(json?.reason || "");
+          const retryable =
+            reason === "not_ready" ||
+            reason === "sheetkey_not_ready" ||
+            reason === "file_not_found_or_not_ready" ||
+            reason === "reportUrl_missing" ||
+            reason.startsWith("upstream_http_");
+
+          if (!retryable) {
+            console.warn("[Wizard] report-link unexpected", res.status, json);
           }
         } catch (e) {
           console.warn("[Wizard] report-link fetch failed", e);
         }
 
-        // ここまで来たらまだ生成中 or 失敗
         if (attempt >= maxAttempts) {
-          console.warn("[Wizard] report-link timeout");
+          console.warn("[Wizard] report-link timeout (sheetKey/reportUrl not returned)");
           setWorking(false);
           return;
         }
 
-        // 次のポーリングを予約
         setTimeout(() => {
           void pollReportLink(attempt + 1);
         }, pollIntervalMs);
@@ -416,7 +421,7 @@ export function Wizard(props: WizardProps) {
           return;
         }
 
-        // ② フロー起動を受け付けたら、25秒待ってから共有リンク取得フローを叩き始める
+        // ② 27秒後に report-link ポーリング開始（最大5回）
         setTimeout(() => {
           void pollReportLink(1);
         }, firstDelayMs);
