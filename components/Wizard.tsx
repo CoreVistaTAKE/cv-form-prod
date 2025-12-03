@@ -402,7 +402,7 @@ export function Wizard(props: WizardProps) {
           return;
         }
 
-        // ② フロー起動を受け付けたら、25秒待ってから共有リンク取得フローを叩き始める
+        // ② フロー起動を受け付けたら、25秒待ってから report-link を叩き始める
         setTimeout(() => {
           void pollReportLink(1);
         }, firstDelayMs);

@@ -1,5 +1,6 @@
 // app/api/forms/submit/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { saveReportResult } from "../reportStore";
 
 // ProcessFormSubmission の URL を使う
 const FLOW_URL = process.env.FLOW_PROCESS_FORM_SUBMISSION_URL;
@@ -45,14 +46,15 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   if (!FLOW_URL) {
     console.error(
-      "[/api/forms/submit] no Flow URL: FLOW_PROCESS_FORM_SUBMISSION_URL is empty."
+      "[/api/forms/submit] no Flow URL: FLOW_PROCESS_FORM_SUBMISSION_URL is empty.",
     );
     return NextResponse.json(
       {
         ok: false,
-        reason: "FLOW_PROCESS_FORM_SUBMISSION_URL がサーバー側で設定されていません。",
+        reason:
+          "FLOW_PROCESS_FORM_SUBMISSION_URL がサーバー側で設定されていません。",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -116,23 +118,61 @@ export async function POST(req: NextRequest) {
         });
 
         const flowText = await flowRes.text();
+        let json: any = {};
+        try {
+          json = flowText ? JSON.parse(flowText) : {};
+        } catch {
+          json = { raw: flowText };
+        }
 
-        if (!flowRes.ok) {
+        if (!flowRes.ok || json?.ok === false) {
           console.warn(
             "[/api/forms/submit] background Flow error",
             flowRes.status,
-            flowText
+            json,
           );
-        } else {
-          console.log(
-            "[/api/forms/submit] background Flow completed",
-            flowRes.status
-          );
+          return;
         }
+
+        // Flow からの結果をメモリストアに保存
+        const reportUrl: string | undefined =
+          json.reportUrl ||
+          json.report_url ||
+          json.fileUrl ||
+          json.file_url ||
+          json.url;
+
+        const sheetKey: string | undefined =
+          json.sheetKey ||
+          json.sheet_key ||
+          json.sheet ||
+          json.varSheet;
+
+        const traceId: string | undefined =
+          json.traceId || json.trace_id || json.runId || json.run_id;
+
+        saveReportResult({
+          user,
+          bldg,
+          seq,
+          reportUrl,
+          sheetKey,
+          traceId,
+        });
+
+        console.log(
+          "[/api/forms/submit] background Flow completed & stored result",
+          {
+            status: flowRes.status,
+            hasUrl: !!reportUrl,
+            sheetKey,
+            traceId,
+          },
+        );
       } catch (e) {
         console.error(
           "[/api/forms/submit] background Flow call failed",
-          e
+          e,
         );
       }
     })();
@@ -147,7 +187,7 @@ export async function POST(req: NextRequest) {
         bldg,
         seq,
       },
-      { status: 202 } // 202 Accepted にしておくと「非同期処理中」が伝わりやすい
+      { status: 202 }, // 202 Accepted にしておくと「非同期処理中」が伝わりやすい
     );
   } catch (err: any) {
     console.error("[/api/forms/submit] error", err);
@@ -157,7 +197,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         reason: message,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
