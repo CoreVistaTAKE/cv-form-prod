@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import https from "node:https";
 import dns from "node:dns";
+import type { IncomingHttpHeaders } from "node:http";
 
 // 明示的に Node ランタイム & 非キャッシュ
 export const runtime = "nodejs";
@@ -39,9 +40,16 @@ function safeUrl(raw: string) {
 
 /**
  * fetch(undici) を避けて、https 直叩き（IPv4固定）で POST JSON。
- * powerplatform.com への接続が undici で ETIMEDOUT になる環境があるため。
  */
-async function httpsPostJsonIPv4(urlStr: string, payload: any, timeoutMs: number) {
+async function httpsPostJsonIPv4(
+  urlStr: string,
+  payload: any,
+  timeoutMs: number,
+): Promise<{
+  status: number;
+  headers: IncomingHttpHeaders;
+  text: string;
+}> {
   const u = new URL(urlStr);
   const body = JSON.stringify(payload ?? {});
   const headers: Record<string, string> = {
@@ -49,11 +57,7 @@ async function httpsPostJsonIPv4(urlStr: string, payload: any, timeoutMs: number
     "Content-Length": Buffer.byteLength(body).toString(),
   };
 
-  return await new Promise<{
-    status: number;
-    headers: https.IncomingHttpHeaders;
-    text: string;
-  }>((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const req = https.request(
       {
         protocol: u.protocol,
@@ -62,7 +66,7 @@ async function httpsPostJsonIPv4(urlStr: string, payload: any, timeoutMs: number
         path: `${u.pathname}${u.search}`,
         method: "POST",
         headers,
-        family: 4, // ★ IPv4固定（重要）
+        family: 4, // ★ IPv4固定
       } as any,
       (res) => {
         let data = "";
@@ -78,7 +82,7 @@ async function httpsPostJsonIPv4(urlStr: string, payload: any, timeoutMs: number
       },
     );
 
-    req.on("error", (e) => reject(e));
+    req.on("error", reject);
 
     req.setTimeout(timeoutMs, () => {
       const err: any = new Error("request_timeout");
@@ -100,9 +104,12 @@ async function postJsonWithRetry(
 
   for (let attempt = 1; attempt <= opts.attempts; attempt++) {
     try {
-      const { status, text } = await httpsPostJsonIPv4(url, payload, opts.timeoutMs);
+      const { status, text } = await httpsPostJsonIPv4(
+        url,
+        payload,
+        opts.timeoutMs,
+      );
 
-      // ここで JSON パース
       let json: any = {};
       try {
         json = text ? JSON.parse(text) : {};
@@ -110,7 +117,6 @@ async function postJsonWithRetry(
         json = { raw: text };
       }
 
-      // 429/5xx はリトライ対象（Flow/コネクタの一時不安定対策）
       if (status === 429 || (status >= 500 && status <= 599)) {
         if (attempt < opts.attempts) {
           await sleep(opts.backoffMs * attempt);
@@ -121,8 +127,6 @@ async function postJsonWithRetry(
       return { status, json, rawText: text };
     } catch (e: any) {
       lastErr = e;
-
-      // ネットワーク系はリトライ
       if (attempt < opts.attempts) {
         await sleep(opts.backoffMs * attempt);
         continue;
@@ -134,16 +138,6 @@ async function postJsonWithRetry(
   throw lastErr;
 }
 
-/**
- * フォーム定義を OneDrive から取得する API
- *
- * 入口パラメータ（どれも任意）:
- *   varUser / user  … テナントID (例: "FirstService")
- *   varBldg / bldg  … 建物名 もしくは フォルダ名
- *                      - "テストビルB"
- *                      - "FirstService_001_テストビルB"
- *   varSeq  / seq / Sseq … "001" 形式の通番（未指定なら 001）
- */
 export async function POST(req: NextRequest) {
   if (!FLOW_URL) {
     return NextResponse.json(
@@ -156,7 +150,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // URLバリデーション（変なURLだと接続で詰むので先に落とす）
   try {
     // eslint-disable-next-line no-new
     new URL(FLOW_URL);
@@ -188,12 +181,9 @@ export async function POST(req: NextRequest) {
 
     // ===== bldgRaw から建物名と seq を抽出 =====
     let buildingName = bldgRaw;
-
     const m = BUILDING_TOKEN_RE.exec(bldgRaw);
     if (m) {
-      // 例: "FirstService_001_テストビルB"
       buildingName = m[3];
-      // URL 側で seq 指定が無ければ、トークンの seq を採用
       if (!body.varSeq && !body.seq && !body.Sseq && !body.sseq) {
         seq = m[2].padStart(3, "0");
       }
@@ -213,25 +203,18 @@ export async function POST(req: NextRequest) {
       url: safeUrl(FLOW_URL),
     });
 
-    // ===== Power Automate 呼び出し（IPv4固定 + リトライ）=====
     const { status, json, rawText } = await postJsonWithRetry(
       FLOW_URL,
       {
-        // Flow 側互換
         varUser: user,
         varBldg: buildingName,
         varSeq: seq,
-        // 正規化済みも同梱（将来の Flow 変更に強い）
         user,
         bldg: buildingName,
         seq,
         ...body,
       },
-      {
-        attempts: 3,
-        timeoutMs: 12_000, // 1回12秒
-        backoffMs: 600, // 0.6s, 1.2s, 1.8s
-      },
+      { attempts: 3, timeoutMs: 12_000, backoffMs: 600 },
     );
 
     if (status < 200 || status >= 300) {
@@ -247,31 +230,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ===== Flow 応答から schema を抽出（旧実装の互換維持）=====
+    // ===== Flow 応答から schema を抽出 =====
     let schema: any;
 
-    // ① 推奨: { ok:true, schema:{meta,pages,fields} }
-    if (json?.ok && json.schema) {
-      schema = json.schema;
-
-      // ② { ok:true, data:{ schema:{...} } }
-    } else if (json?.ok && json.data?.schema) {
-      schema = json.data.schema;
-
-      // ③ スキーマ本体そのまま: {meta,pages,fields}
-    } else if (json?.meta && Array.isArray(json.pages) && Array.isArray(json.fields)) {
+    if (json?.ok && json.schema) schema = json.schema;
+    else if (json?.ok && json.data?.schema) schema = json.data.schema;
+    else if (json?.meta && Array.isArray(json.pages) && Array.isArray(json.fields))
       schema = json;
-
-      // ④ たまに body に入れて返す Flow があるケース（保険）
-    } else if (
+    else if (
       json?.body?.meta &&
       Array.isArray(json.body.pages) &&
       Array.isArray(json.body.fields)
-    ) {
+    )
       schema = json.body;
-    } else if (json?.body?.ok && json.body.schema) {
-      schema = json.body.schema;
-    } else {
+    else if (json?.body?.ok && json.body.schema) schema = json.body.schema;
+    else {
       const reason =
         json?.reason || json?.error || "Flow 応答に schema が含まれていません。";
       return NextResponse.json({ ok: false, reason, upstream: json }, { status: 500 });
