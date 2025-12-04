@@ -1,5 +1,4 @@
 // app/api/forms/reportStore.ts
-
 export type ReportResult = {
   reportUrl?: string;
   sheetKey?: string;

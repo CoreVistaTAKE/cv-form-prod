@@ -33,7 +33,7 @@ export interface Field {
   key: string;
   label: string;
   required?: boolean;
-  placeholder?: string;
+  placeholder?: boolean | string;
   options?: string[];
   labelBold?: boolean;
   labelUnderline?: boolean;
@@ -119,7 +119,14 @@ const defaultMeta: FormMeta = {
 
 function ensureSystemPages(pages: Page[]): Page[] {
   // 既定には reviseList は含めない（必要時に追加）
-  const need: PageType[] = ["info", "revise", "basic", "previous", "review", "complete"];
+  const need: PageType[] = [
+    "info",
+    "revise",
+    "basic",
+    "previous",
+    "review",
+    "complete",
+  ];
   const exist = new Set(pages.map((p) => p.type));
   const out = [...pages];
   for (const t of need) {
@@ -131,18 +138,120 @@ function ensureSystemPages(pages: Page[]): Page[] {
           t === "info"
             ? "フォーム情報"
             : t === "revise"
-            ? "修正ページ"
-            : t === "basic"
-            ? "基本情報ページ"
-            : t === "previous"
-            ? "前回点検時の状況"
-            : t === "review"
-            ? "最終確認"
-            : "完了",
+              ? "修正ページ"
+              : t === "basic"
+                ? "基本情報ページ"
+                : t === "previous"
+                  ? "前回点検時の状況"
+                  : t === "review"
+                    ? "最終確認"
+                    : "完了",
       });
     }
   }
   return out;
+}
+
+/** 文字列配列の安全な正規化 */
+export function safeArrayOfString(v: any): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((x) => typeof x === "string" && x.trim())
+    .map((x) => x.trim());
+}
+
+/** meta から exclude を正規化して取り出す */
+export function normalizeExcludeMeta(meta: any): {
+  excludePages: string[];
+  excludeFields: string[];
+} {
+  const excludePages = safeArrayOfString(meta?.excludePages);
+  const excludeFields = safeArrayOfString(meta?.excludeFields);
+  return { excludePages, excludeFields };
+}
+
+/**
+ * /fill 用：excludePages/excludeFields を適用して pages/fields をフィルタした schema を返す
+ * - section page は excludePages（pageId）で除外
+ * - field は excludeFields（fieldId or label互換）で除外
+ * - さらに、配下フィールドが全て除外の section は表示する意味がないので除外
+ */
+export function filterSchemaForFill<T extends { meta: any; pages: any[]; fields: any[] }>(
+  schema: T,
+  opts?: { excludePages?: string[]; excludeFields?: string[] },
+): T {
+  const pages = Array.isArray(schema?.pages) ? schema.pages : [];
+  const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+  const meta = schema?.meta || {};
+
+  const excludePagesArr = safeArrayOfString(opts?.excludePages ?? meta?.excludePages);
+  const excludeFieldsArr = safeArrayOfString(opts?.excludeFields ?? meta?.excludeFields);
+
+  if (!excludePagesArr.length && !excludeFieldsArr.length) {
+    return schema;
+  }
+
+  const excludedPages = new Set<string>(excludePagesArr);
+  const excludedFields = new Set<string>(excludeFieldsArr);
+
+  const isFieldExcluded = (f: any) => {
+    const id = typeof f?.id === "string" ? f.id.trim() : "";
+    const label = typeof f?.label === "string" ? f.label.trim() : "";
+    return (id && excludedFields.has(id)) || (label && excludedFields.has(label));
+  };
+
+  // pageId -> fields[]
+  const byPage = new Map<string, any[]>();
+  for (const f of fields) {
+    const pid = typeof f?.pageId === "string" ? f.pageId.trim() : "";
+    if (!pid) continue;
+    const arr = byPage.get(pid) || [];
+    arr.push(f);
+    byPage.set(pid, arr);
+  }
+
+  // section page の実効除外（pageId指定 or 全フィールド除外）
+  const excludedSectionPageIds = new Set<string>();
+  for (const p of pages) {
+    if (!p || p.type !== "section") continue;
+    const pid = typeof p?.id === "string" ? p.id.trim() : "";
+    if (!pid) continue;
+
+    if (excludedPages.has(pid)) {
+      excludedSectionPageIds.add(pid);
+      continue;
+    }
+
+    const fs = byPage.get(pid) || [];
+    if (fs.length > 0 && fs.every(isFieldExcluded)) {
+      excludedSectionPageIds.add(pid);
+    }
+  }
+
+  const nextPages = pages.filter((p: any) => {
+    if (!p) return false;
+    if (p.type !== "section") return true;
+    const pid = typeof p?.id === "string" ? p.id.trim() : "";
+    return pid ? !excludedSectionPageIds.has(pid) : true;
+  });
+
+  const nextFields = fields.filter((f: any) => {
+    const pid = typeof f?.pageId === "string" ? f.pageId.trim() : "";
+    if (pid && excludedSectionPageIds.has(pid)) return false;
+    if (isFieldExcluded(f)) return false;
+    return true;
+  });
+
+  return {
+    ...(schema as any),
+    meta: {
+      ...(meta || {}),
+      excludePages: excludePagesArr,
+      excludeFields: excludeFieldsArr,
+    },
+    pages: nextPages,
+    fields: nextFields,
+  } as T;
 }
 
 export const useBuilderStore = create<State>((set, get) => ({
@@ -154,7 +263,10 @@ export const useBuilderStore = create<State>((set, get) => ({
 
   initOnce: () => {
     try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem("cv_form_schema_v049") : null;
+      const raw =
+        typeof window !== "undefined"
+          ? localStorage.getItem("cv_form_schema_v049")
+          : null;
       if (raw) {
         const data = JSON.parse(raw);
         const pages = ensureSystemPages(data.pages || []);
@@ -178,7 +290,7 @@ export const useBuilderStore = create<State>((set, get) => ({
     const { meta, pages, fields, activePageId } = get();
     localStorage.setItem(
       "cv_form_schema_v049",
-      JSON.stringify({ meta, pages, fields, activePageId })
+      JSON.stringify({ meta, pages, fields, activePageId }),
     );
   },
 
@@ -193,7 +305,12 @@ export const useBuilderStore = create<State>((set, get) => ({
     const p = {
       id: nanoid(),
       type: t,
-      title: t === "section" ? "セクション" : t === "basic" ? "基本情報ページ" : undefined,
+      title:
+        t === "section"
+          ? "セクション"
+          : t === "basic"
+            ? "基本情報ページ"
+            : undefined,
     } as Page;
     set((s) => ({ pages: [...s.pages, p] }));
     get().save();
@@ -225,7 +342,13 @@ export const useBuilderStore = create<State>((set, get) => ({
 
   movePage: (from, to) =>
     set((s) => {
-      if (from < 0 || to < 0 || from >= s.pages.length || to >= s.pages.length) return s;
+      if (
+        from < 0 ||
+        to < 0 ||
+        from >= s.pages.length ||
+        to >= s.pages.length
+      )
+        return s;
       const arr = [...s.pages];
       const item = arr.splice(from, 1)[0];
       arr.splice(to, 0, item);
@@ -259,7 +382,8 @@ export const useBuilderStore = create<State>((set, get) => ({
     }
     if (t === "date") {
       f.label = "点検日";
-      f.description = "空白は当日になります。さかのぼって入力する際はその日を入力してください";
+      f.description =
+        "空白は当日になります。さかのぼって入力する際はその日を入力してください";
     }
     if (t === "forminfo") {
       f.label = "フォーム設定";

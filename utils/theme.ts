@@ -1,3 +1,4 @@
+// utils/theme.ts`
 export type Theme = "black"|"white"|"red"|"blue"|"yellow"|"green";
 export function applyTheme(t?: Theme){
   try{

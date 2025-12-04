@@ -35,49 +35,6 @@ function pickString(...cands: any[]): string | undefined {
 }
 
 /**
- * Flow(LogicApps/PowerAutomate) の戻りの揺れを吸収
- * - そのまま {ok:true,...} が返るケース
- * - { statusCode, headers, body } 形式で返るケース
- *   - body が object
- *   - body が JSON string
- */
-function normalizeFlowPayload(json: any): {
-  payload: any;
-  embeddedStatusCode?: number;
-} {
-  if (!json || typeof json !== "object") {
-    return { payload: json };
-  }
-
-  // wrapper: {statusCode, headers, body}
-  const scRaw = (json as any).statusCode ?? (json as any).status ?? undefined;
-  const embeddedStatusCode =
-    typeof scRaw === "string"
-      ? Number(scRaw)
-      : typeof scRaw === "number"
-        ? scRaw
-        : undefined;
-
-  // body が object
-  if (json.body && typeof json.body === "object") {
-    return { payload: json.body, embeddedStatusCode };
-  }
-
-  // body が string(JSON)
-  if (typeof json.body === "string") {
-    try {
-      const parsed = JSON.parse(json.body);
-      return { payload: parsed, embeddedStatusCode };
-    } catch {
-      return { payload: { raw: json.body }, embeddedStatusCode };
-    }
-  }
-
-  // wrapper じゃない/または body が無い
-  return { payload: json, embeddedStatusCode };
-}
-
-/**
  * undici(fetch) を避けて、https 直叩き（IPv4固定）で POST JSON
  */
 async function httpsPostJsonIPv4(
@@ -178,6 +135,25 @@ async function postJsonWithRetry(
 }
 
 export async function POST(req: NextRequest) {
+  if (!FLOW_URL) {
+    console.error("[/api/forms/report-link] FLOW_GET_REPORT_SHARE_LINK_URL is empty");
+    return NextResponse.json(
+      { ok: false, reason: "FLOW_GET_REPORT_SHARE_LINK_URL が未設定です。" },
+      { status: 500 },
+    );
+  }
+
+  try {
+    // eslint-disable-next-line no-new
+    new URL(FLOW_URL);
+  } catch {
+    console.error("[/api/forms/report-link] invalid Flow URL:", FLOW_URL);
+    return NextResponse.json(
+      { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
+      { status: 500 },
+    );
+  }
+
   try {
     const body: any = await req.json().catch(() => ({}));
 
@@ -198,13 +174,16 @@ export async function POST(req: NextRequest) {
 
     if (!stored) {
       // まだ ProcessFormSubmission が完走してない
-      return NextResponse.json({ ok: false, reason: "not_ready" }, { status: 200 });
+      return NextResponse.json(
+        { ok: false, reason: "not_ready" },
+        { status: 200 },
+      );
     }
 
     const sheetKey = pickString(stored.sheetKey);
     const traceId = pickString(stored.traceId);
 
-    // ProcessFormSubmission が reportUrl まで返しているなら、その時点で完了
+    // ProcessFormSubmission が reportUrl まで返しているなら、それを最優先で返す
     const storedUrl = pickString(stored.reportUrl);
     if (storedUrl) {
       return NextResponse.json(
@@ -213,7 +192,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // sheetKey が無いなら、リンク生成以前に止まっている（= まだ or 異常）
+    // sheetKey が無いなら、リンク生成以前に失敗（= Flow 側が想定どおり返してない）
     if (!sheetKey) {
       return NextResponse.json(
         { ok: false, reason: "sheetkey_not_ready", traceId },
@@ -221,34 +200,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2) ここから先は Flow(GetReportShareLink) が必要
-    if (!FLOW_URL) {
-      console.error("[/api/forms/report-link] FLOW_GET_REPORT_SHARE_LINK_URL is empty");
-      return NextResponse.json(
-        { ok: false, reason: "FLOW_GET_REPORT_SHARE_LINK_URL が未設定です。" },
-        { status: 500 },
-      );
-    }
-
-    try {
-      // eslint-disable-next-line no-new
-      new URL(FLOW_URL);
-    } catch {
-      console.error("[/api/forms/report-link] invalid Flow URL:", FLOW_URL);
-      return NextResponse.json(
-        { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
-        { status: 500 },
-      );
-    }
-
-    // 3) sheetKey を varSheet として渡して共有リンク作成を依頼
+    // 2) sheetKey が取れたら、GetReportShareLink を起動してリンク生成
     const forwardBody = {
-      ...body, // 先に body を展開しておく（下で上書きする）
+      ...body,
       user,
       bldg,
       seq,
       sheetKey,
-      // Flow 側互換（varSheet が主）
+      // Flow 側で拾いやすいように互換フィールドも送る
       sheet: sheetKey,
       varUser: user,
       varBldg: bldg,
@@ -264,35 +223,26 @@ export async function POST(req: NextRequest) {
       url: safeUrl(FLOW_URL),
     });
 
-    const { status: httpStatus, json, rawText } = await postJsonWithRetry(
+    const { status, json, rawText } = await postJsonWithRetry(
       FLOW_URL,
       forwardBody,
       { attempts: 2, timeoutMs: 12_000, backoffMs: 700 },
     );
 
-    const { payload, embeddedStatusCode } = normalizeFlowPayload(json);
-    const effectiveStatus =
-      typeof embeddedStatusCode === "number" && !Number.isNaN(embeddedStatusCode)
-        ? embeddedStatusCode
-        : httpStatus;
+    // PowerAutomate が {statusCode, body:{...}} 形式で返すケース吸収
+    const payload = json?.body && typeof json.body === "object" ? json.body : json;
 
-    if (effectiveStatus < 200 || effectiveStatus >= 300 || payload?.ok === false) {
-      // ここに file_not_found_or_not_ready が来る想定（= ポーリング継続）
+    if (status < 200 || status >= 300 || payload?.ok === false) {
+      // 「ファイル未生成」もここに入る（= ポーリング継続対象）
       return NextResponse.json(
         {
           ok: false,
-          reason: payload?.reason || `upstream_http_${effectiveStatus}`,
+          reason: payload?.reason || `upstream_http_${status}`,
           sheetKey,
           traceId,
           reportFilePath: payload?.reportFilePath,
-          upstreamStatus: effectiveStatus,
-          upstream: payload,
-          upstreamRaw:
-            typeof payload?.raw === "string"
-              ? payload.raw
-              : typeof json?.raw === "string"
-                ? json.raw
-                : rawText,
+          upstreamStatus: status,
+          upstreamRaw: typeof payload?.raw === "string" ? payload.raw : rawText,
         },
         { status: 200 },
       );
@@ -322,7 +272,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4) 取れたリンクを store に保存（次回から即返す）
+    // 3) 取れたリンクを store に保存（次回から即返せる）
     saveReportResult({
       user,
       bldg,

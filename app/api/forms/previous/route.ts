@@ -1,21 +1,31 @@
-// app/api/forms/previous/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { postJsonWithRetry, safeUrl, unwrapPowerAutomatePayload } from "@/app/api/_lib/flowHttp";
 
-const FLOW_URL = process.env.FLOW_GET_PREVIOUS_REPORT_URL;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const FLOW_URL = process.env.FLOW_GET_PREVIOUS_REPORT_URL || "";
 
 export async function POST(req: NextRequest) {
   if (!FLOW_URL) {
     return NextResponse.json(
-      {
-        ok: false,
-        reason: "FLOW_GET_PREVIOUS_REPORT_URL がサーバー側で設定されていません。",
-      },
-      { status: 500 }
+      { ok: false, reason: "FLOW_GET_PREVIOUS_REPORT_URL が未設定です。" },
+      { status: 500 },
     );
   }
 
   try {
-    const body: any = await req.json();
+    // eslint-disable-next-line no-new
+    new URL(FLOW_URL);
+  } catch {
+    return NextResponse.json(
+      { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
+      { status: 500 },
+    );
+  }
+
+  try {
+    const body: any = await req.json().catch(() => ({}));
 
     const user = (body.varUser ?? body.user ?? "").toString().trim();
     const bldg = (body.varBldg ?? body.bldg ?? "").toString().trim();
@@ -26,70 +36,38 @@ export async function POST(req: NextRequest) {
     if (!user) missing.push("user");
     if (!bldg) missing.push("bldg");
     if (!seq) missing.push("seq");
-
     if (missing.length > 0) {
       return NextResponse.json(
-        {
-          ok: false,
-          reason: `missing required fields: ${missing.join(", ")}`,
-        },
-        { status: 400 }
+        { ok: false, reason: `missing required fields: ${missing.join(", ")}` },
+        { status: 400 },
       );
     }
 
-    const forwardBody = {
-      varUser: user,
-      varBldg: bldg,
-      varSeq: seq,
-      // 互換用
-      user,
-      bldg,
-      seq,
-    };
+    const forwardBody = { ...body, varUser: user, varBldg: bldg, varSeq: seq, user, bldg, seq };
 
-    const flowRes = await fetch(FLOW_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(forwardBody),
-    });
+    console.log("[api/forms/previous] calling Flow", { user, bldg, seq, url: safeUrl(FLOW_URL) });
 
-    const text = await flowRes.text();
-    let flowJson: any = {};
-    try {
-      flowJson = text ? JSON.parse(text) : {};
-    } catch {
-      flowJson = { raw: text };
-    }
-
-    if (!flowRes.ok || flowJson?.ok === false) {
-      console.warn(
-        "[/api/forms/previous] Flow returned error",
-        flowRes.status,
-        flowJson
-      );
-    }
-
-    // { ok:true, item:{...} } を想定
-    const item =
-      flowJson?.item ??
-      flowJson?.data?.item ??
-      null;
-
-    return NextResponse.json(
-      {
-        ok: true,
-        item,
-      },
-      { status: 200 }
+    const { status, json, rawText } = await postJsonWithRetry(
+      FLOW_URL,
+      forwardBody,
+      { attempts: 2, timeoutMs: 12_000, backoffMs: 700 },
     );
+
+    const payload = unwrapPowerAutomatePayload(json);
+
+    if (status < 200 || status >= 300 || payload?.ok === false) {
+      console.warn("[api/forms/previous] upstream error", { status, upstream: payload, upstreamRaw: rawText });
+      // previous はベストエフォートなので 200 で返す運用でも良いが、いったん ok:true/item:null にする
+    }
+
+    const item = payload?.item ?? payload?.data?.item ?? null;
+
+    return NextResponse.json({ ok: true, item }, { status: 200 });
   } catch (err: any) {
-    console.error("[/api/forms/previous] error", err);
+    console.error("[api/forms/previous] error", err);
     return NextResponse.json(
-      {
-        ok: false,
-        reason: err?.message || String(err),
-      },
-      { status: 500 }
+      { ok: false, reason: err?.message || String(err) },
+      { status: 500 },
     );
   }
 }

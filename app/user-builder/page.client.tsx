@@ -1,14 +1,7 @@
-'use client';
+"use client";
 
-import UserBuilderPanels from './panels/UserBuilderPanels';
+import UserBuilderPanels from "./panels/UserBuilderPanels";
 
-type Props = {
-  createUrl: string;
-  statusUrl: string;
-  defaultUser?: string | null;
-  defaultHost?: string | null;
-};
-
-export default function UserBuilderClient(props: Props) {
-  return <UserBuilderPanels {...props} />;
+export default function UserBuilderClient() {
+  return <UserBuilderPanels />;
 }
