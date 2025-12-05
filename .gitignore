@@ -29,4 +29,19 @@ _logs/
 # Test/Artifacts
 flow_test_log.json
 payload*.json
-ac.abort()
+ac.abort()# ---- secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- build outputs ----
+.next/
+out/
+
+# ---- deps ----
+node_modules/
+
+# ---- logs/tmp ----
+_logs/
+tmp/
+*.log
