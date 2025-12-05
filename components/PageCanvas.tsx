@@ -1,3 +1,4 @@
+// components/PageCanvas.tsx
 "use client";
 import { useBuilderStore, FieldType } from "@/store/builder";
 

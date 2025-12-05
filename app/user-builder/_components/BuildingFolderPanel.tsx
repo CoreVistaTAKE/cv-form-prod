@@ -1,8 +1,8 @@
-// app/user-builder/_components/BuildingFolderPanel.tsx
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
 import BuildStatus from "./BuildStatus.client";
+import type { Theme } from "@/utils/theme";
 
 type CreateRes = {
   ok?: boolean;
@@ -17,13 +17,26 @@ type CreateRes = {
 type Props = {
   defaultUser?: string | null;
   defaultHost?: string | null;
+
+  // ★運用A：新規作成時にだけ反映する meta
+  excludePages: string[];
+  excludeFields: string[];
+  theme?: Theme;
+
   onBuilt?: (info: { user: string; bldg: string; token: string; statusPath: string; traceId?: string }) => void;
 };
 
 const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
 const ENV_DEFAULT_HOST = process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp";
 
-export default function BuildingFolderPanel({ defaultUser, defaultHost, onBuilt }: Props) {
+export default function BuildingFolderPanel({
+  defaultUser,
+  defaultHost,
+  excludePages,
+  excludeFields,
+  theme,
+  onBuilt,
+}: Props) {
   const [user] = useState<string>(defaultUser || ENV_DEFAULT_USER);
   const [host] = useState<string>(defaultHost || ENV_DEFAULT_HOST);
   const [bldg, setBldg] = useState<string>("");
@@ -47,13 +60,17 @@ export default function BuildingFolderPanel({ defaultUser, defaultHost, onBuilt 
       setRunning(true);
 
       // ★Flow直叩き禁止。サーバAPIにプロキシさせる
-      const res = await fetch("/api/registry/create-folder", {
+      // ★運用A：exclude/theme はここでだけ渡す（作成後は修正不可）
+      const res = await fetch("/api/flows/create-form-folder", {
         method: "POST",
         headers: { "Content-Type": "application/json; charset=utf-8" },
         body: JSON.stringify({
           varUser: user,
           varBldg: bldg.trim(),
           varHost: host,
+          excludePages: Array.isArray(excludePages) ? excludePages : [],
+          excludeFields: Array.isArray(excludeFields) ? excludeFields : [],
+          theme: typeof theme === "string" ? theme : "",
         }),
       });
 
@@ -81,12 +98,16 @@ export default function BuildingFolderPanel({ defaultUser, defaultHost, onBuilt 
         statusPath: stPath,
         traceId: json.traceId,
       });
-    } catch (e: any) {
-      setError(e?.message || String(e));
+    } catch (e: unknown) {
+      const msg =
+        typeof e === "object" && e !== null && "message" in e
+          ? String((e as { message?: unknown }).message)
+          : String(e);
+      setError(msg);
     } finally {
       setRunning(false);
     }
-  }, [bldg, user, host, onBuilt]);
+  }, [bldg, user, host, excludePages, excludeFields, theme, onBuilt]);
 
   return (
     <div className="space-y-4">

@@ -1,3 +1,4 @@
+// store/builder.ts
 "use client";
 import { create } from "zustand";
 import { nanoid } from "nanoid";

@@ -1,3 +1,4 @@
+// components/PagesSidebar.tsx
 "use client";
 import { useBuilderStore, PageType } from "@/store/builder";
 

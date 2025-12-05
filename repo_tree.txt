@@ -55,6 +55,7 @@ app\globals.css
 app\layout.tsx
 app\layout.tsx.bak
 app\page.tsx
+app\api\_lib
 app\api\buildings
 app\api\changelog
 app\api\debug
@@ -107,8 +108,11 @@ app\api\forms\report-link\route.ts
 app\api\forms\resolve\route.ts
 app\api\forms\submit\route.ts
 app\api\health\route.ts
+app\api\registry\build-status
 app\api\registry\lookup
+app\api\registry\build-status\route.ts
 app\api\registry\lookup\route.ts
+app\api\_lib\flowHttp.ts
 app\builder\page.tsx
 app\fill\_components
 app\fill\FillClient.tsx

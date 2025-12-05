@@ -1,4 +1,3 @@
-// app/fill/FillClient.tsx
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -22,54 +21,16 @@ type LoadState =
 
 type ResolvedExclude = { excludePages: string[]; excludeFields: string[] };
 
-function loadScopedExclude(user: string, folderToken: string): ResolvedExclude | null {
-  try {
-    const key = `cv_exclude_v1::${user}::${folderToken}`;
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    const excludePages = safeArrayOfString(obj?.excludePages);
-    const excludeFields = safeArrayOfString(obj?.excludeFields);
-    if (!excludePages.length && !excludeFields.length) return null;
-    return { excludePages, excludeFields };
-  } catch {
-    return null;
-  }
-}
-
-function loadLegacyExclude(): ResolvedExclude | null {
-  try {
-    const pRaw = localStorage.getItem("cv_excluded_pages");
-    const fRaw = localStorage.getItem("cv_excluded_fields");
-    const excludePages = safeArrayOfString(pRaw ? JSON.parse(pRaw) : []);
-    const excludeFields = safeArrayOfString(fRaw ? JSON.parse(fRaw) : []);
-    if (!excludePages.length && !excludeFields.length) return null;
-    return { excludePages, excludeFields };
-  } catch {
-    return null;
-  }
-}
-
-function resolveExcludeForFill(meta: any, user: string, bldg: string, seq3: string): ResolvedExclude {
-  const metaPages = safeArrayOfString(meta?.excludePages);
-  const metaFields = safeArrayOfString(meta?.excludeFields);
-
-  // schema meta に入っているなら、それを正とする（端末localより優先）
-  if (metaPages.length || metaFields.length) {
-    return { excludePages: metaPages, excludeFields: metaFields };
-  }
-
-  // schema meta に無い場合だけ暫定フォールバック（同一端末用）
-  if (typeof window === "undefined") return { excludePages: [], excludeFields: [] };
-
-  const folderToken = `${user}_${seq3}_${bldg}`;
-  const scoped = loadScopedExclude(user, folderToken);
-  if (scoped) return scoped;
-
-  const legacy = loadLegacyExclude();
-  if (legacy) return legacy;
-
-  return { excludePages: [], excludeFields: [] };
+/**
+ * 運用A（固定）:
+ * - schema.meta.excludePages / excludeFields を唯一の正とする
+ * - localStorage の除外設定フォールバックは廃止（作成後に変えられない仕様を担保）
+ */
+function resolveExcludeForFill(meta: any): ResolvedExclude {
+  return {
+    excludePages: safeArrayOfString(meta?.excludePages),
+    excludeFields: safeArrayOfString(meta?.excludeFields),
+  };
 }
 
 export default function FillClient({ user, bldg, seq, host }: Props) {
@@ -132,11 +93,7 @@ export default function FillClient({ user, bldg, seq, host }: Props) {
           schema = payload.schema;
         } else if (payload?.ok && payload.data?.schema) {
           schema = payload.data.schema;
-        } else if (
-          payload?.meta &&
-          Array.isArray(payload.pages) &&
-          Array.isArray(payload.fields)
-        ) {
+        } else if (payload?.meta && Array.isArray(payload.pages) && Array.isArray(payload.fields)) {
           schema = payload;
         } else {
           throw new Error("read API から想定外の形式のレスポンスが返ってきました。");
@@ -161,9 +118,7 @@ export default function FillClient({ user, bldg, seq, host }: Props) {
             if (prevJson?.ok && prevJson.item) previousFromExcel = prevJson.item;
           } else {
             console.warn(
-              `[FillClient] previous HTTP ${prevRes.status} ${await prevRes
-                .text()
-                .catch(() => "")}`,
+              `[FillClient] previous HTTP ${prevRes.status} ${await prevRes.text().catch(() => "")}`,
             );
           }
         } catch (e: any) {
@@ -182,21 +137,16 @@ export default function FillClient({ user, bldg, seq, host }: Props) {
               }
             : schema;
 
-        // --- 3) 対象外(非適用)の適用（A1） ---
-        const resolved = resolveExcludeForFill(
-          schemaWithPrev?.meta,
-          user,
-          bldg,
-          normalizedSeq,
-        );
+        // --- 3) 対象外(非適用)の適用（運用A：metaのみ） ---
+        const resolved = resolveExcludeForFill(schemaWithPrev?.meta);
 
         const schemaForFill = filterSchemaForFill(
           {
             ...schemaWithPrev,
             meta: {
               ...(schemaWithPrev.meta || {}),
-              excludePages: resolved.excludePages,
-              excludeFields: resolved.excludeFields,
+              excludePages: resolved.excludePages, // 空配列も正
+              excludeFields: resolved.excludeFields, // 空配列も正
             },
           },
           resolved,

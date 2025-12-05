@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
 import BuildingFolderPanel from "../_components/BuildingFolderPanel";
@@ -9,15 +10,20 @@ import BuildStatus from "../_components/BuildStatus.client";
 function SectionCard({
   id,
   title,
+  right,
   children,
 }: {
   id?: string;
   title: string;
-  children?: React.ReactNode;
+  right?: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <section id={id} className="card">
-      <div className="form-title mb-2">{title}</div>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="form-title">{title}</div>
+        {right}
+      </div>
       {children}
     </section>
   );
@@ -45,91 +51,84 @@ const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
 
 function safeArrayOfString(v: any): string[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
+  return v
+    .filter((x) => typeof x === "string" && x.trim())
+    .map((x) => x.trim());
 }
 
-/**
- * scoped exclude
- * key: cv_exclude_v1::${user}::${folderToken}
- */
-const EXCLUDE_SCOPE_PREFIX = "cv_exclude_v1";
-type ScopedExclude = { excludePages: string[]; excludeFields: string[] };
-
-function excludeScopeKey(user: string, folderToken: string) {
-  return `${EXCLUDE_SCOPE_PREFIX}::${user}::${folderToken}`;
-}
-
-function loadScopedExclude(user?: string, folderToken?: string): ScopedExclude | null {
-  if (!user || !folderToken) return null;
-  try {
-    const raw = localStorage.getItem(excludeScopeKey(user, folderToken));
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    const excludePages = safeArrayOfString(obj?.excludePages);
-    const excludeFields = safeArrayOfString(obj?.excludeFields);
-    if (!excludePages.length && !excludeFields.length) return null;
-    return { excludePages, excludeFields };
-  } catch {
-    return null;
-  }
-}
-
-function saveScopedExclude(
-  user?: string,
-  folderToken?: string,
-  excludePages?: string[],
-  excludeFields?: string[],
-) {
-  if (!user || !folderToken) return;
-  try {
-    localStorage.setItem(
-      excludeScopeKey(user, folderToken),
-      JSON.stringify({
-        excludePages: Array.isArray(excludePages) ? excludePages : [],
-        excludeFields: Array.isArray(excludeFields) ? excludeFields : [],
-      }),
-    );
-  } catch {
-    // ignore
-  }
+function normalizeMeta(maybeMeta: any) {
+  const excludePages = safeArrayOfString(maybeMeta?.excludePages);
+  const excludeFields = safeArrayOfString(maybeMeta?.excludeFields);
+  const theme = typeof maybeMeta?.theme === "string" ? (maybeMeta.theme as Theme) : undefined;
+  return { excludePages, excludeFields, theme };
 }
 
 export default function UserBuilderPanels() {
   const builder = useBuilderStore();
 
-  // ===== 初期化 =====
+  // ===== 初期化（ローカルは補助。真実はサーバ） =====
   useEffect(() => {
     builder.initOnce();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("cv_form_base_v049");
-      if (raw) builder.hydrateFrom(JSON.parse(raw));
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [builder.hydrateFrom]);
-
-  useEffect(() => {
-    applyTheme(builder.meta.theme);
-  }, [builder.meta.theme]);
-
-  // ===== registry（OneDrive由来）=====
+  // ===== registry（OneDrive一覧＝Flow由来）=====
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
   const [registryItems, setRegistryItems] = useState<RegistryItem[]>([]);
-  const [picked, setPicked] = useState<string>("");
+  const [picked, setPicked] = useState<string>(""); // token を選択
   const [intakeBusy, setIntakeBusy] = useState(false);
   const [intakeMsg, setIntakeMsg] = useState("");
 
-  // 「いま画面にロードされているschema」がどの token のものか（exclude scope）
-  const [loadedFolderToken, setLoadedFolderToken] = useState<string>("");
+  // 現在 builder にロード済みの token
+  const [loadedToken, setLoadedToken] = useState<string>(""); // "BaseSystem" or token
+  const isBaseMode = loadedToken === "BaseSystem";
 
   // 下段ステータス（URL/QR）
   const [statusInfo, setStatusInfo] = useState<StatusInfo | null>(null);
 
+  // ===== BaseSystem をサーバから読む（localStorageを真実にしない）=====
+  const loadBaseSilently = useCallback(async () => {
+    setIntakeMsg("");
+    setIntakeBusy(true);
+    try {
+      const r = await fetch("/api/forms/read-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ varUser: lookUser }),
+      });
+      const t = await r.text();
+      if (!r.ok) throw new Error(`read-base HTTP ${r.status} ${t}`);
+      const j = JSON.parse(t);
+      if (!j?.schema) throw new Error("schema が空です");
+
+      builder.hydrateFrom(j.schema);
+
+      // meta 正規化（空配列もそのまま正）
+      const n = normalizeMeta(j.schema?.meta);
+      builder.setMeta({
+        excludePages: n.excludePages,
+        excludeFields: n.excludeFields,
+        ...(n.theme ? { theme: n.theme } : {}),
+      });
+
+      setLoadedToken("BaseSystem");
+      setStatusInfo(null);
+
+      // プレビュー用にテーマ適用（運用AでもUX的に必要）
+      applyTheme(n.theme || builder.meta.theme);
+    } catch (e: any) {
+      setIntakeMsg(e?.message || String(e));
+    } finally {
+      setIntakeBusy(false);
+    }
+  }, [builder, lookUser]);
+
+  // 初回に base をロード
+  useEffect(() => {
+    void loadBaseSilently();
+  }, [loadBaseSilently]);
+
+  // ===== 一覧取得 =====
   async function reloadBuildings() {
     setIntakeMsg("");
     setIntakeBusy(true);
@@ -156,12 +155,12 @@ export default function UserBuilderPanels() {
     }
   }
 
-  // 初回に一覧を取る（UX向上。localStorage依存は削除）
   useEffect(() => {
     void reloadBuildings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ===== 建物（既存）を読み込む：運用Aなので “閲覧専用” =====
   async function loadSelected() {
     if (!picked) return;
     setIntakeMsg("");
@@ -170,7 +169,7 @@ export default function UserBuilderPanels() {
       const r = await fetch("/api/forms/read", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ varUser: lookUser, varBldg: picked }),
+        body: JSON.stringify({ varUser: lookUser, varBldg: picked }), // varBldg=token（既存API互換）
       });
 
       const t = await r.text();
@@ -178,37 +177,35 @@ export default function UserBuilderPanels() {
       const j = JSON.parse(t);
       if (!j?.schema) throw new Error("schema が空です");
 
-      localStorage.setItem("cv_form_base_v049", JSON.stringify(j.schema));
       builder.hydrateFrom(j.schema);
 
-      setLoadedFolderToken(picked);
+      // meta 正規化して builder.meta に反映（ただし運用Aなので保存はしない）
+      const n = normalizeMeta(j.schema?.meta);
+      builder.setMeta({
+        excludePages: n.excludePages,
+        excludeFields: n.excludeFields,
+        ...(n.theme ? { theme: n.theme } : {}),
+      });
 
-      // exclude適用（優先：schema.meta → scoped localStorage）
-      try {
-        const schemaMeta: any = j.schema?.meta || {};
-        const schemaExcludePages = safeArrayOfString(schemaMeta?.excludePages);
-        const schemaExcludeFields = safeArrayOfString(schemaMeta?.excludeFields);
+      setLoadedToken(picked);
 
-        if (schemaExcludePages.length || schemaExcludeFields.length) {
-          saveScopedExclude(lookUser, picked, schemaExcludePages, schemaExcludeFields);
-          builder.setMeta({ excludePages: schemaExcludePages, excludeFields: schemaExcludeFields });
-        } else {
-          const scoped = loadScopedExclude(lookUser, picked);
-          if (scoped) builder.setMeta({ excludePages: scoped.excludePages, excludeFields: scoped.excludeFields });
-        }
-      } catch {
-        // ignore
-      }
-
-      // ★重要：statusPath は registryItems（=OneDrive正）から引く。localStorageに依存しない。
+      // statusPath は registryItems（OneDrive正）から引く
       const hit = registryItems.find((x) => x.token === picked);
       if (hit?.statusPath) {
-        setStatusInfo({ user: lookUser, bldg: hit.bldg || "", statusPath: hit.statusPath, token: hit.token });
+        setStatusInfo({
+          user: lookUser,
+          bldg: hit.bldg || "",
+          statusPath: hit.statusPath,
+          token: hit.token,
+        });
       } else {
         setStatusInfo(null);
       }
 
-      alert(`読込完了: ${picked}`);
+      // 表示テーマを適用
+      applyTheme(n.theme || builder.meta.theme);
+
+      alert(`読込完了（閲覧専用）: ${picked}`);
     } catch (e: any) {
       setIntakeMsg(e?.message || String(e));
     } finally {
@@ -217,51 +214,11 @@ export default function UserBuilderPanels() {
   }
 
   async function resetToBase() {
-    setIntakeMsg("");
-    setIntakeBusy(true);
-    try {
-      const r = await fetch("/api/forms/read-base", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ varUser: lookUser }),
-      });
-      const t = await r.text();
-      if (!r.ok) throw new Error(`read-base HTTP ${r.status} ${t}`);
-      const j = JSON.parse(t);
-      if (!j?.schema) throw new Error("schema が空です");
-
-      localStorage.setItem("cv_form_base_v049", JSON.stringify(j.schema));
-      builder.hydrateFrom(j.schema);
-
-      setLoadedFolderToken("BaseSystem");
-      setStatusInfo(null);
-
-      // BaseSystem でも scoped を拾う（暫定）
-      try {
-        const schemaMeta: any = j.schema?.meta || {};
-        const schemaExcludePages = safeArrayOfString(schemaMeta?.excludePages);
-        const schemaExcludeFields = safeArrayOfString(schemaMeta?.excludeFields);
-
-        if (schemaExcludePages.length || schemaExcludeFields.length) {
-          saveScopedExclude(lookUser, "BaseSystem", schemaExcludePages, schemaExcludeFields);
-          builder.setMeta({ excludePages: schemaExcludePages, excludeFields: schemaExcludeFields });
-        } else {
-          const scoped = loadScopedExclude(lookUser, "BaseSystem");
-          if (scoped) builder.setMeta({ excludePages: scoped.excludePages, excludeFields: scoped.excludeFields });
-        }
-      } catch {
-        // ignore
-      }
-
-      alert("BaseSystem（標準フォーム）を読み込みました。");
-    } catch (e: any) {
-      setIntakeMsg(e?.message || String(e));
-    } finally {
-      setIntakeBusy(false);
-    }
+    await loadBaseSilently();
+    alert("BaseSystem（標準フォーム）を読み込みました。");
   }
 
-  // ===== カラー設定 =====
+  // ===== カラー（運用A：BaseSystem（作成用）でのみ変更可） =====
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
     { k: "white", name: "白", bg: "#ffffff", fg: "#111111", border: "#d9dfec" },
     { k: "black", name: "黒", bg: "#141d3d", fg: "#eef3ff", border: "#2b3a6f" },
@@ -271,7 +228,7 @@ export default function UserBuilderPanels() {
     { k: "green", name: "緑", bg: "#5ce0b1", fg: "#0f241e", border: "#234739" },
   ];
 
-  // ===== 対象外(非適用) UI =====
+  // ===== 対象外(非適用) UI（運用A：BaseSystem（作成用）でのみ変更可） =====
   const pages = builder.pages as any[];
   const fields = builder.fields as any[];
 
@@ -287,33 +244,24 @@ export default function UserBuilderPanels() {
   }, [fields]);
 
   const excludedPages = useMemo(
-    () => new Set<string>(Array.isArray(builder.meta.excludePages) ? builder.meta.excludePages : []),
+    () => new Set<string>(safeArrayOfString(builder.meta.excludePages)),
     [builder.meta.excludePages],
   );
   const excludedFields = useMemo(
-    () => new Set<string>(Array.isArray(builder.meta.excludeFields) ? builder.meta.excludeFields : []),
+    () => new Set<string>(safeArrayOfString(builder.meta.excludeFields)),
     [builder.meta.excludeFields],
   );
 
   const commitExclude = (nextPages: Set<string>, nextFields: Set<string>) => {
-    const excludePagesArr = Array.from(nextPages);
-    const excludeFieldsArr = Array.from(nextFields);
-
-    builder.setMeta({ excludePages: excludePagesArr, excludeFields: excludeFieldsArr });
-
-    // legacy互換（残す）
-    try {
-      localStorage.setItem("cv_excluded_pages", JSON.stringify(excludePagesArr));
-      localStorage.setItem("cv_excluded_fields", JSON.stringify(excludeFieldsArr));
-    } catch {
-      // ignore
-    }
-
-    const tokenForScope = (loadedFolderToken || picked || "BaseSystem").trim();
-    saveScopedExclude(lookUser, tokenForScope, excludePagesArr, excludeFieldsArr);
+    if (!isBaseMode) return; // ★運用A：既存フォームは編集不可
+    builder.setMeta({
+      excludePages: Array.from(nextPages),
+      excludeFields: Array.from(nextFields),
+    });
   };
 
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
+    if (!isBaseMode) return; // ★運用A
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -331,6 +279,7 @@ export default function UserBuilderPanels() {
   };
 
   const toggleFieldExclude = (fid: string) => {
+    if (!isBaseMode) return; // ★運用A
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -340,10 +289,28 @@ export default function UserBuilderPanels() {
     commitExclude(nextPages, nextFields);
   };
 
+  // ===== Create 用に渡す meta（空配列でも必ず渡す）=====
+  const metaForCreate = useMemo(() => {
+    const excludePages = safeArrayOfString(builder.meta.excludePages);
+    const excludeFields = safeArrayOfString(builder.meta.excludeFields);
+    const theme = typeof builder.meta.theme === "string" ? builder.meta.theme : undefined;
+    return { excludePages, excludeFields, theme };
+  }, [builder.meta.excludePages, builder.meta.excludeFields, builder.meta.theme]);
+
+  const modeBadge = useMemo(() => {
+    if (!loadedToken) return <span className="text-xs text-slate-500">モード: 初期化中</span>;
+    if (loadedToken === "BaseSystem") return <span className="text-xs text-green-700">モード: 新規作成（編集可）</span>;
+    return <span className="text-xs text-red-600">モード: 既存フォーム閲覧（編集不可）</span>;
+  }, [loadedToken]);
+
   return (
     <div className="space-y-6">
       {/* Intake */}
-      <SectionCard id="intake" title="建物用フォームを読み込む（OneDrive一覧＝Flow由来）">
+      <SectionCard
+        id="intake"
+        title="建物用フォームを読み込む（OneDrive一覧＝Flow由来）"
+        right={<div className="flex items-center gap-2">{modeBadge}</div>}
+      >
         <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
           <select
             className="input"
@@ -361,34 +328,47 @@ export default function UserBuilderPanels() {
               ))
             )}
           </select>
+
           <button className="btn" onClick={loadSelected} disabled={!picked || intakeBusy}>
-            読込
+            読込（閲覧）
           </button>
           <button className="btn-secondary" onClick={reloadBuildings} disabled={intakeBusy}>
             再取得
           </button>
           <button className="btn-secondary" onClick={resetToBase} disabled={intakeBusy}>
-            リセット（BaseSystem）
+            作成モードへ戻す（BaseSystem）
           </button>
-          {intakeMsg && (
-            <span className="text-red-500 text-xs whitespace-pre-wrap">{intakeMsg}</span>
-          )}
+
+          {intakeMsg && <span className="text-red-500 text-xs whitespace-pre-wrap">{intakeMsg}</span>}
         </div>
+
+        {!isBaseMode && (
+          <div className="text-xs text-slate-500 mt-2">
+            ※運用A：既存フォームは閲覧専用です。テーマ／対象外設定は編集できません（作成時に確定）。
+          </div>
+        )}
       </SectionCard>
 
       {/* フォームカラー */}
-      <SectionCard id="color" title="フォームカラー設定（フォームに反映）">
+      <SectionCard id="color" title="フォームカラー設定（作成時にだけ反映）">
+        <div className="text-xs text-slate-500 mb-2">
+          運用A：この画面で設定した theme は <b>新規フォルダ作成時の form JSON にだけ書き込み</b>ます。
+          既存フォルダ（既存フォーム）の theme は変更できません。
+        </div>
+
         <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
           {themeItems.map((t) => (
             <button
               key={t.k}
               className="btn"
-              style={{ background: t.bg, color: t.fg, border: `1px solid ${t.border}` }}
+              style={{ background: t.bg, color: t.fg, border: `1px solid ${t.border}`, opacity: isBaseMode ? 1 : 0.5 }}
+              disabled={!isBaseMode}
               onClick={() => {
+                if (!isBaseMode) return;
                 builder.setMeta({ theme: t.k });
-                localStorage.setItem("cv_theme", t.k);
                 applyTheme(t.k);
               }}
+              title={isBaseMode ? "作成時の theme を設定" : "既存フォームは変更不可（運用A）"}
             >
               {t.name}
             </button>
@@ -397,12 +377,11 @@ export default function UserBuilderPanels() {
       </SectionCard>
 
       {/* 対象外 */}
-      <SectionCard id="exclude" title="対象外(非適用)設定">
+      <SectionCard id="exclude" title="対象外(非適用)設定（作成時にだけ反映）">
         <div className="text-xs text-slate-500 mb-2">
-          セクション単位・項目単位で「対象外」にできます。緑＝表示中、赤＝非表示。
+          運用A：この設定は <b>新規作成時にだけ form JSON（schema.meta.excludePages / excludeFields）へ書き込み</b>ます。
           <br />
-          ※この設定は schema.meta（excludePages / excludeFields）に反映します。
-          端末内では建物フォルダごとにも保存します（暫定）。
+          既存フォームに対して後から反映する “保存導線（update）” は存在しません（＝固定）。
         </div>
 
         <div className="space-y-3">
@@ -425,8 +404,10 @@ export default function UserBuilderPanels() {
                       <div style={{ fontSize: 14, color: "#6B7280", marginTop: 2 }}>{p.description}</div>
                     )}
                   </div>
+
                   <button
                     type="button"
+                    disabled={!isBaseMode}
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -442,7 +423,9 @@ export default function UserBuilderPanels() {
                       fontWeight: 600,
                       minWidth: 68,
                       textAlign: "center",
+                      opacity: isBaseMode ? 1 : 0.5,
                     }}
+                    title={isBaseMode ? "作成時の exclude を設定" : "既存フォームは変更不可（運用A）"}
                   >
                     {sectionExcluded ? "非表示" : "表示中"}
                   </button>
@@ -461,7 +444,7 @@ export default function UserBuilderPanels() {
                         return (
                           <label key={fid} className="flex items-center justify-between" style={{ fontSize: 14 }}>
                             <span>{label}</span>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                               <span
                                 style={{
                                   fontSize: 11,
@@ -470,11 +453,17 @@ export default function UserBuilderPanels() {
                                   backgroundColor: fExcluded ? "#fee2e2" : "#dcfce7",
                                   color: fExcluded ? "#b91c1c" : "#166534",
                                   border: `1px solid ${fExcluded ? "#fecaca" : "#bbf7d0"}`,
+                                  opacity: isBaseMode ? 1 : 0.5,
                                 }}
                               >
                                 {fExcluded ? "非表示" : "表示中"}
                               </span>
-                              <input type="checkbox" checked={fExcluded} onChange={() => toggleFieldExclude(fid)} />
+                              <input
+                                type="checkbox"
+                                checked={fExcluded}
+                                disabled={!isBaseMode}
+                                onChange={() => toggleFieldExclude(fid)}
+                              />
                             </span>
                           </label>
                         );
@@ -489,30 +478,50 @@ export default function UserBuilderPanels() {
       </SectionCard>
 
       {/* 建物フォルダ作成 */}
-      <SectionCard id="folder" title="建物フォルダ作成とURL発行（Flowはサーバ経由）">
-        <BuildingFolderPanel
-          defaultUser={lookUser}
-          onBuilt={(info) => {
-            // create後は status を即表示
-            setStatusInfo({ user: info.user, bldg: info.bldg, statusPath: info.statusPath, token: info.token });
-            // 一覧も更新して選択肢に反映
-            void reloadBuildings();
-            // 新規フォルダを選択状態にする（UX）
-            setPicked(info.token);
-            setLoadedFolderToken(info.token);
-          }}
-        />
+      <SectionCard id="folder" title="建物フォルダ作成（作成時に meta を確定）">
+        {!isBaseMode ? (
+          <div className="text-xs text-slate-500">
+            既存フォーム閲覧モードでは作成を行いません（事故防止）。
+            <br />
+            「作成モードへ戻す（BaseSystem）」を押してから新規作成してください。
+          </div>
+        ) : (
+          <BuildingFolderPanel
+            defaultUser={lookUser}
+            excludePages={metaForCreate.excludePages}
+            excludeFields={metaForCreate.excludeFields}
+            theme={metaForCreate.theme as Theme | undefined}
+            onBuilt={(info) => {
+              // create後は status を即表示
+              setStatusInfo({
+                user: info.user,
+                bldg: info.bldg,
+                statusPath: info.statusPath,
+                token: info.token,
+              });
+
+              // 一覧も更新して選択肢に反映
+              void reloadBuildings();
+
+              // UX：作ったtokenを選択状態にしておく（ただし読むのは手動）
+              setPicked(info.token || "");
+            }}
+          />
+        )}
       </SectionCard>
 
       {/* ステータス */}
       <SectionCard id="status" title="ステータス（URL/QR）">
         {statusInfo?.statusPath ? (
-          <BuildStatus user={statusInfo.user} bldg={statusInfo.bldg} statusPath={statusInfo.statusPath} justTriggered={false} />
+          <BuildStatus
+            user={statusInfo.user}
+            bldg={statusInfo.bldg}
+            statusPath={statusInfo.statusPath}
+            justTriggered={false}
+          />
         ) : (
           <div className="text-xs text-slate-500">
-            建物用フォームを読み込む、または「建物フォルダ作成 + URL発行」を実行すると、ここに URL / QR が表示されます。
-            <br />
-            ※statusPath は OneDrive一覧（Flow）由来なので、端末差は出ません。
+            「建物フォルダ作成」を実行すると、ここに status が表示されます。
           </div>
         )}
       </SectionCard>
