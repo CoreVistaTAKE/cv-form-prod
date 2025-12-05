@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
@@ -59,24 +59,32 @@ function safeArrayOfString(v: any): string[] {
 function normalizeMeta(maybeMeta: any) {
   const excludePages = safeArrayOfString(maybeMeta?.excludePages);
   const excludeFields = safeArrayOfString(maybeMeta?.excludeFields);
-  const theme = typeof maybeMeta?.theme === "string" ? (maybeMeta.theme as Theme) : undefined;
+  const theme =
+    typeof maybeMeta?.theme === "string" ? (maybeMeta.theme as Theme) : undefined;
   return { excludePages, excludeFields, theme };
 }
 
 export default function UserBuilderPanels() {
-  // ✅ Zustand を「丸ごと購読」しない（これが無限リクエストの主因）
+  // ★ Zustand は「全state購読」すると副作用ループの火種になるので、必要な物だけ selector で取る
   const initOnce = useBuilderStore((s) => s.initOnce);
   const hydrateFrom = useBuilderStore((s) => s.hydrateFrom);
   const setMeta = useBuilderStore((s) => s.setMeta);
 
-  const meta = useBuilderStore((s) => s.meta);
   const pages = useBuilderStore((s) => s.pages) as any[];
   const fields = useBuilderStore((s) => s.fields) as any[];
+  const metaTheme = useBuilderStore((s) => s.meta.theme) as Theme | undefined;
+  const metaExcludePages = useBuilderStore((s) => s.meta.excludePages);
+  const metaExcludeFields = useBuilderStore((s) => s.meta.excludeFields);
 
   // ===== 初期化（ローカルは補助。真実はサーバ） =====
   useEffect(() => {
     initOnce();
   }, [initOnce]);
+
+  // テーマ適用（meta.theme 変更時に追随）
+  useEffect(() => {
+    applyTheme((metaTheme as Theme) || "black");
+  }, [metaTheme]);
 
   // ===== registry（OneDrive一覧＝Flow由来）=====
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
@@ -92,14 +100,6 @@ export default function UserBuilderPanels() {
   // 下段ステータス（URL/QR）
   const [statusInfo, setStatusInfo] = useState<StatusInfo | null>(null);
 
-  // ✅ 初回Baseロードは「1回だけ」に固定（再レンダで叩き直さない）
-  const didLoadBaseOnceRef = useRef(false);
-
-  // ===== テーマ適用（meta.theme を唯一の真実に）=====
-  useEffect(() => {
-    applyTheme(meta.theme);
-  }, [meta.theme]);
-
   // ===== BaseSystem をサーバから読む（localStorageを真実にしない）=====
   const loadBaseSilently = useCallback(async () => {
     setIntakeMsg("");
@@ -112,6 +112,7 @@ export default function UserBuilderPanels() {
       });
       const t = await r.text();
       if (!r.ok) throw new Error(`read-base HTTP ${r.status} ${t}`);
+
       const j = JSON.parse(t);
       if (!j?.schema) throw new Error("schema が空です");
 
@@ -134,10 +135,8 @@ export default function UserBuilderPanels() {
     }
   }, [hydrateFrom, setMeta, lookUser]);
 
-  // 初回に base をロード（※1回だけ）
+  // 初回に base をロード（★ここが無限ループしていた）
   useEffect(() => {
-    if (didLoadBaseOnceRef.current) return;
-    didLoadBaseOnceRef.current = true;
     void loadBaseSilently();
   }, [loadBaseSilently]);
 
@@ -151,15 +150,18 @@ export default function UserBuilderPanels() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ varUser: lookUser }),
       });
-      const t = await r.text();
-      if (!r.ok) throw new Error(`lookup HTTP ${r.status} ${t}`);
-      const j = JSON.parse(t);
 
+      const t = await r.text().catch(() => "");
+      if (!r.ok) throw new Error(`lookup HTTP ${r.status} ${t}`);
+
+      const j = t ? JSON.parse(t) : {};
       const items: RegistryItem[] = Array.isArray(j?.items) ? j.items : [];
       setRegistryItems(items);
 
       const options = items.map((x) => x.token).filter(Boolean);
-      setPicked((prev) => (prev && options.includes(prev) ? prev : options[0] || ""));
+      setPicked((prev) =>
+        prev && options.includes(prev) ? prev : options[0] || "",
+      );
       setIntakeMsg("");
     } catch (e: any) {
       setIntakeMsg(e?.message || String(e));
@@ -175,6 +177,7 @@ export default function UserBuilderPanels() {
   // ===== 建物（既存）を読み込む：運用Aなので “閲覧専用” =====
   const loadSelected = useCallback(async () => {
     if (!picked) return;
+
     setIntakeMsg("");
     setIntakeBusy(true);
     try {
@@ -186,6 +189,7 @@ export default function UserBuilderPanels() {
 
       const t = await r.text();
       if (!r.ok) throw new Error(`read HTTP ${r.status} ${t}`);
+
       const j = JSON.parse(t);
       if (!j?.schema) throw new Error("schema が空です");
 
@@ -249,66 +253,64 @@ export default function UserBuilderPanels() {
     return m;
   }, [fields]);
 
-  const excludedPages = useMemo(() => new Set<string>(safeArrayOfString(meta.excludePages)), [meta.excludePages]);
-  const excludedFields = useMemo(() => new Set<string>(safeArrayOfString(meta.excludeFields)), [meta.excludeFields]);
-
-  const commitExclude = useCallback(
-    (nextPages: Set<string>, nextFields: Set<string>) => {
-      if (!isBaseMode) return; // ★運用A：既存フォームは編集不可
-      setMeta({
-        excludePages: Array.from(nextPages),
-        excludeFields: Array.from(nextFields),
-      });
-    },
-    [isBaseMode, setMeta],
+  const excludedPages = useMemo(
+    () => new Set<string>(safeArrayOfString(metaExcludePages)),
+    [metaExcludePages],
+  );
+  const excludedFields = useMemo(
+    () => new Set<string>(safeArrayOfString(metaExcludeFields)),
+    [metaExcludeFields],
   );
 
-  const toggleSectionExclude = useCallback(
-    (pageId: string, fieldIds: string[]) => {
-      if (!isBaseMode) return; // ★運用A
-      const nextPages = new Set(excludedPages);
-      const nextFields = new Set(excludedFields);
+  const commitExclude = (nextPages: Set<string>, nextFields: Set<string>) => {
+    if (!isBaseMode) return; // ★運用A：既存フォームは編集不可
+    setMeta({
+      excludePages: Array.from(nextPages),
+      excludeFields: Array.from(nextFields),
+    });
+  };
 
-      const wasExcluded = nextPages.has(pageId);
+  const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
+    if (!isBaseMode) return; // ★運用A
+    const nextPages = new Set(excludedPages);
+    const nextFields = new Set(excludedFields);
 
-      if (wasExcluded) {
-        nextPages.delete(pageId);
-        fieldIds.forEach((id) => nextFields.delete(id));
-      } else {
-        nextPages.add(pageId);
-        fieldIds.forEach((id) => nextFields.add(id));
-      }
+    const wasExcluded = nextPages.has(pageId);
 
-      commitExclude(nextPages, nextFields);
-    },
-    [isBaseMode, excludedPages, excludedFields, commitExclude],
-  );
+    if (wasExcluded) {
+      nextPages.delete(pageId);
+      fieldIds.forEach((id) => nextFields.delete(id));
+    } else {
+      nextPages.add(pageId);
+      fieldIds.forEach((id) => nextFields.add(id));
+    }
 
-  const toggleFieldExclude = useCallback(
-    (fid: string) => {
-      if (!isBaseMode) return; // ★運用A
-      const nextPages = new Set(excludedPages);
-      const nextFields = new Set(excludedFields);
+    commitExclude(nextPages, nextFields);
+  };
 
-      if (nextFields.has(fid)) nextFields.delete(fid);
-      else nextFields.add(fid);
+  const toggleFieldExclude = (fid: string) => {
+    if (!isBaseMode) return; // ★運用A
+    const nextPages = new Set(excludedPages);
+    const nextFields = new Set(excludedFields);
 
-      commitExclude(nextPages, nextFields);
-    },
-    [isBaseMode, excludedPages, excludedFields, commitExclude],
-  );
+    if (nextFields.has(fid)) nextFields.delete(fid);
+    else nextFields.add(fid);
 
-  // ===== Create 用に渡す meta（空配列でも必ず渡す）=====
+    commitExclude(nextPages, nextFields);
+  };
+
+  // ===== Create 用に渡す meta =====
   const metaForCreate = useMemo(() => {
-    const excludePages = safeArrayOfString(meta.excludePages);
-    const excludeFields = safeArrayOfString(meta.excludeFields);
-    const theme = typeof meta.theme === "string" ? meta.theme : undefined;
+    const excludePages = safeArrayOfString(metaExcludePages);
+    const excludeFields = safeArrayOfString(metaExcludeFields);
+    const theme = typeof metaTheme === "string" ? metaTheme : undefined;
     return { excludePages, excludeFields, theme };
-  }, [meta.excludePages, meta.excludeFields, meta.theme]);
+  }, [metaExcludePages, metaExcludeFields, metaTheme]);
 
   const modeBadge = useMemo(() => {
     if (!loadedToken) return <span className="text-xs text-slate-500">モード: 初期化中</span>;
-    if (loadedToken === "BaseSystem") return <span className="text-xs text-green-700">モード: 新規作成（編集可）</span>;
+    if (loadedToken === "BaseSystem")
+      return <span className="text-xs text-green-700">モード: 新規作成（編集可）</span>;
     return <span className="text-xs text-red-600">モード: 既存フォーム閲覧（編集不可）</span>;
   }, [loadedToken]);
 
@@ -321,7 +323,12 @@ export default function UserBuilderPanels() {
         right={<div className="flex items-center gap-2">{modeBadge}</div>}
       >
         <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-          <select className="input" style={{ minWidth: 320 }} value={picked} onChange={(e) => setPicked(e.target.value)}>
+          <select
+            className="input"
+            style={{ minWidth: 320 }}
+            value={picked}
+            onChange={(e) => setPicked(e.target.value)}
+          >
             {registryItems.length === 0 ? (
               <option value="">（建物がありません）</option>
             ) : (
@@ -375,7 +382,7 @@ export default function UserBuilderPanels() {
               onClick={() => {
                 if (!isBaseMode) return;
                 setMeta({ theme: t.k });
-                // applyTheme は meta.theme effect が担当
+                applyTheme(t.k);
               }}
               title={isBaseMode ? "作成時の theme を設定" : "既存フォームは変更不可（運用A）"}
             >
@@ -501,7 +508,6 @@ export default function UserBuilderPanels() {
             excludeFields={metaForCreate.excludeFields}
             theme={metaForCreate.theme as Theme | undefined}
             onBuilt={(info) => {
-              // create後は status を即表示
               setStatusInfo({
                 user: info.user,
                 bldg: info.bldg,
@@ -509,7 +515,6 @@ export default function UserBuilderPanels() {
                 token: info.token,
               });
 
-              // 一覧も更新して選択肢に反映
               void reloadBuildings();
 
               // UX：作ったtokenを選択状態にしておく（ただし読むのは手動）
@@ -522,7 +527,12 @@ export default function UserBuilderPanels() {
       {/* ステータス */}
       <SectionCard id="status" title="ステータス（URL/QR）">
         {statusInfo?.statusPath ? (
-          <BuildStatus user={statusInfo.user} bldg={statusInfo.bldg} statusPath={statusInfo.statusPath} justTriggered={false} />
+          <BuildStatus
+            user={statusInfo.user}
+            bldg={statusInfo.bldg}
+            statusPath={statusInfo.statusPath}
+            justTriggered={false}
+          />
         ) : (
           <div className="text-xs text-slate-500">「建物フォルダ作成」を実行すると、ここに status が表示されます。</div>
         )}

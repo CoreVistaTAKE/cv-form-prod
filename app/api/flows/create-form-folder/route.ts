@@ -6,7 +6,6 @@ import type { IncomingHttpHeaders } from "node:http";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Heroku/Undici/LogicApps 系で IPv6 が刺さることがあるので念のため
 try {
   dns.setDefaultResultOrder("ipv4first");
 } catch {
@@ -24,7 +23,6 @@ type CreateReq = {
   varBldg?: unknown;
   varHost?: unknown;
 
-  // 運用A：作成時に確定させたい設定（任意）
   excludePages?: unknown;
   excludeFields?: unknown;
   theme?: unknown;
@@ -56,7 +54,6 @@ function isRecord(v: unknown): v is AnyRecord {
 function safeUrl(raw: string) {
   try {
     const u = new URL(raw);
-    // sig 等のクエリはログに出さない
     return `${u.origin}${u.pathname}`;
   } catch {
     return "<invalid-url>";
@@ -77,7 +74,7 @@ function originFromReq(req: NextRequest): string {
 }
 
 /**
- * fetch(undici) を避けて、https 直叩き（IPv4固定）で POST JSON。
+ * ★重要：Heroku 30s 制限があるので「全体タイムアウト」を setTimeout で強制する
  */
 async function httpsPostJsonIPv4(
   urlStr: string,
@@ -104,7 +101,7 @@ async function httpsPostJsonIPv4(
         path: `${u.pathname}${u.search}`,
         method: "POST",
         headers,
-        family: 4, // ★ IPv4固定
+        family: 4,
       } as any,
       (res) => {
         let data = "";
@@ -120,12 +117,19 @@ async function httpsPostJsonIPv4(
       },
     );
 
-    req.on("error", reject);
-
-    req.setTimeout(timeoutMs, () => {
+    const kill = setTimeout(() => {
       const err: any = new Error("request_timeout");
       err.code = "ETIMEDOUT";
       req.destroy(err);
+    }, timeoutMs);
+
+    req.on("error", (e) => {
+      clearTimeout(kill);
+      reject(e);
+    });
+
+    req.on("close", () => {
+      clearTimeout(kill);
     });
 
     req.write(body);
@@ -142,11 +146,7 @@ async function postJsonWithRetry(
 
   for (let attempt = 1; attempt <= opts.attempts; attempt++) {
     try {
-      const { status, text } = await httpsPostJsonIPv4(
-        url,
-        payload,
-        opts.timeoutMs,
-      );
+      const { status, text } = await httpsPostJsonIPv4(url, payload, opts.timeoutMs);
 
       let json: any = {};
       try {
@@ -155,6 +155,7 @@ async function postJsonWithRetry(
         json = { raw: text };
       }
 
+      // 429/5xx は次を試す
       if (status === 429 || (status >= 500 && status <= 599)) {
         if (attempt < opts.attempts) {
           await sleep(opts.backoffMs * attempt);
@@ -177,17 +178,12 @@ async function postJsonWithRetry(
 }
 
 export async function POST(req: NextRequest) {
-  // ★ここが重要：env 名のズレを吸収
   const FLOW_URL =
     process.env.FLOW_CREATE_FORM_FOLDER_URL ||
     process.env.PA_CREATE_FORM_FOLDER_URL ||
     "";
 
   if (!FLOW_URL) {
-    console.error("[api/flows/create-form-folder] no Flow URL", {
-      FLOW_CREATE_FORM_FOLDER_URL: !!process.env.FLOW_CREATE_FORM_FOLDER_URL,
-      PA_CREATE_FORM_FOLDER_URL: !!process.env.PA_CREATE_FORM_FOLDER_URL,
-    });
     return NextResponse.json(
       { ok: false, reason: "FLOW_CREATE_FORM_FOLDER_URL がサーバー側で設定されていません。" },
       { status: 500 },
@@ -198,14 +194,12 @@ export async function POST(req: NextRequest) {
     // eslint-disable-next-line no-new
     new URL(FLOW_URL);
   } catch {
-    console.error("[api/flows/create-form-folder] invalid Flow URL:", FLOW_URL);
     return NextResponse.json(
       { ok: false, reason: "Flow URL が不正です（URL形式ではありません）。" },
       { status: 500 },
     );
   }
 
-  // JSONが壊れている/空の場合は 400 で返す
   let body: CreateReq = {};
   try {
     body = (await req.json()) as CreateReq;
@@ -216,11 +210,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ★ user/bldg と varUser/varBldg の揺れを吸収
   const user = (toStr(body.user) || toStr(body.varUser)).trim();
   const bldg = (toStr(body.bldg) || toStr(body.varBldg)).trim();
 
-  // varHost はクライアント指定を優先、無ければ request origin
   const varHost =
     (toStr(body.varHost) || toStr(body.host)).trim() || originFromReq(req);
 
@@ -235,7 +227,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 運用A：作成時に確定させたい設定（任意）
   const metaUnknown = body.meta;
   const metaObj = isRecord(metaUnknown) ? metaUnknown : null;
 
@@ -247,7 +238,6 @@ export async function POST(req: NextRequest) {
   );
   const theme = toStr(body.theme ?? (metaObj ? metaObj["theme"] : undefined)).trim();
 
-  // Flow 側互換：var* + 非 var を両方渡す
   const forwardBody = {
     varUser: user,
     varBldg: bldg,
@@ -261,6 +251,7 @@ export async function POST(req: NextRequest) {
     excludeFields,
     theme,
 
+    // Flow 側が var* を拾う想定ならこちらも渡す（保険）
     varExcludePages: excludePages,
     varExcludeFields: excludeFields,
     varTheme: theme,
@@ -276,23 +267,14 @@ export async function POST(req: NextRequest) {
   });
 
   try {
-    const { status, json, rawText } = await postJsonWithRetry(
-      FLOW_URL,
-      forwardBody,
-      {
-        attempts: 3,
-        timeoutMs: 20_000,
-        backoffMs: 600,
-      },
-    );
+    // ★ Heroku 30秒制限を絶対に超えない設定（最大でも ~18s 前後で返す）
+    const { status, json, rawText } = await postJsonWithRetry(FLOW_URL, forwardBody, {
+      attempts: 2,
+      timeoutMs: 9_000,
+      backoffMs: 400,
+    });
 
-    // Flow が 2xx 以外、または ok:false を返したら 502 で上流情報を返す
     if (status < 200 || status >= 300 || json?.ok === false) {
-      console.warn("[api/flows/create-form-folder] Flow error", {
-        status,
-        upstream: json,
-        upstreamRaw: typeof json?.raw === "string" ? json.raw : rawText,
-      });
       return NextResponse.json(
         {
           ok: false,
@@ -307,15 +289,19 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(json, { status: 200 });
   } catch (e: any) {
-    console.error("[api/flows/create-form-folder] failed", {
-      user,
-      bldg,
-      error: e?.message || String(e),
-      code: e?.code,
-    });
+    const code = e?.code || e?.cause?.code;
+    const msg = e?.message || String(e);
+
+    // ★ タイムアウトは 504 で返す（H12ではなく、UIが理由を取れる）
+    if (code === "ETIMEDOUT") {
+      return NextResponse.json(
+        { ok: false, reason: "Flow 接続がタイムアウトしました（PowerPlatform到達不可/遅延）", code },
+        { status: 504 },
+      );
+    }
 
     return NextResponse.json(
-      { ok: false, reason: e?.message || String(e), code: e?.code },
+      { ok: false, reason: msg, code },
       { status: 500 },
     );
   }
