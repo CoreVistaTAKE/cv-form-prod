@@ -15,6 +15,8 @@ try {
 type AnyRecord = Record<string, unknown>;
 
 type CreateReq = {
+  requestId?: unknown;
+
   user?: unknown;
   bldg?: unknown;
   host?: unknown;
@@ -28,8 +30,6 @@ type CreateReq = {
   theme?: unknown;
   meta?: unknown;
 };
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function toStr(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -73,9 +73,6 @@ function originFromReq(req: NextRequest): string {
   return `${proto}://${host}`;
 }
 
-/**
- * ★重要：Heroku 30s 制限があるので「全体タイムアウト」を setTimeout で強制する
- */
 async function httpsPostJsonIPv4(
   urlStr: string,
   payload: any,
@@ -90,6 +87,7 @@ async function httpsPostJsonIPv4(
   const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body).toString(),
+    "User-Agent": "corevista-form/flow-proxy",
   };
 
   return await new Promise((resolve, reject) => {
@@ -101,7 +99,7 @@ async function httpsPostJsonIPv4(
         path: `${u.pathname}${u.search}`,
         method: "POST",
         headers,
-        family: 4,
+        family: 4, // ★IPv4固定
       } as any,
       (res) => {
         let data = "";
@@ -137,51 +135,20 @@ async function httpsPostJsonIPv4(
   });
 }
 
-async function postJsonWithRetry(
-  url: string,
-  payload: any,
-  opts: { attempts: number; timeoutMs: number; backoffMs: number },
-): Promise<{ status: number; json: any; rawText: string }> {
-  let lastErr: any;
-
-  for (let attempt = 1; attempt <= opts.attempts; attempt++) {
-    try {
-      const { status, text } = await httpsPostJsonIPv4(url, payload, opts.timeoutMs);
-
-      let json: any = {};
-      try {
-        json = text ? JSON.parse(text) : {};
-      } catch {
-        json = { raw: text };
-      }
-
-      // 429/5xx は次を試す
-      if (status === 429 || (status >= 500 && status <= 599)) {
-        if (attempt < opts.attempts) {
-          await sleep(opts.backoffMs * attempt);
-          continue;
-        }
-      }
-
-      return { status, json, rawText: text };
-    } catch (e: any) {
-      lastErr = e;
-      if (attempt < opts.attempts) {
-        await sleep(opts.backoffMs * attempt);
-        continue;
-      }
-      break;
-    }
-  }
-
-  throw lastErr;
+// ★同一(bldg,user)の同時実行を止める（Heroku 1 dyno 前提の最低限デデュープ）
+declare global {
+  // eslint-disable-next-line no-var
+  var __CV_CREATE_FORM_FOLDER_INFLIGHT__: Set<string> | undefined;
 }
+const INFLIGHT = (globalThis.__CV_CREATE_FORM_FOLDER_INFLIGHT__ ??= new Set<string>());
 
 export async function POST(req: NextRequest) {
-  const FLOW_URL =
+  const FLOW_URL_RAW =
     process.env.FLOW_CREATE_FORM_FOLDER_URL ||
     process.env.PA_CREATE_FORM_FOLDER_URL ||
     "";
+
+  const FLOW_URL = FLOW_URL_RAW.trim().replace(/^"+|"+$/g, ""); // ★Heroku config で引用符が混入しても耐える
 
   if (!FLOW_URL) {
     return NextResponse.json(
@@ -204,57 +171,54 @@ export async function POST(req: NextRequest) {
   try {
     body = (await req.json()) as CreateReq;
   } catch {
-    return NextResponse.json(
-      { ok: false, reason: "request body must be JSON" },
-      { status: 400 },
-    );
+    return NextResponse.json({ ok: false, reason: "request body must be JSON" }, { status: 400 });
   }
 
   const user = (toStr(body.user) || toStr(body.varUser)).trim();
   const bldg = (toStr(body.bldg) || toStr(body.varBldg)).trim();
+  const requestId = toStr(body.requestId).trim();
 
-  const varHost =
-    (toStr(body.varHost) || toStr(body.host)).trim() || originFromReq(req);
+  const varHost = (toStr(body.varHost) || toStr(body.host)).trim() || originFromReq(req);
 
   if (!user || !bldg) {
     return NextResponse.json(
-      {
-        ok: false,
-        reason: "missing required fields: user, bldg",
-        got: { user: !!user, bldg: !!bldg },
-      },
+      { ok: false, reason: "missing required fields: user, bldg", got: { user: !!user, bldg: !!bldg } },
       { status: 400 },
+    );
+  }
+
+  const lockKey = `${user}::${bldg}`;
+  if (INFLIGHT.has(lockKey)) {
+    return NextResponse.json(
+      { ok: false, reason: "同じ建物の作成処理が実行中です（二重送信をブロックしました）", code: "DUPLICATE_INFLIGHT" },
+      { status: 409 },
     );
   }
 
   const metaUnknown = body.meta;
   const metaObj = isRecord(metaUnknown) ? metaUnknown : null;
 
-  const excludePages = safeStringArray(
-    body.excludePages ?? (metaObj ? metaObj["excludePages"] : undefined),
-  );
-  const excludeFields = safeStringArray(
-    body.excludeFields ?? (metaObj ? metaObj["excludeFields"] : undefined),
-  );
+  const excludePages = safeStringArray(body.excludePages ?? (metaObj ? metaObj["excludePages"] : undefined));
+  const excludeFields = safeStringArray(body.excludeFields ?? (metaObj ? metaObj["excludeFields"] : undefined));
   const theme = toStr(body.theme ?? (metaObj ? metaObj["theme"] : undefined)).trim();
 
   const forwardBody = {
+    // Flow 側の入力に合わせて両方渡す（保険）
     varUser: user,
     varBldg: bldg,
     varHost,
+    varExcludePages: excludePages,
+    varExcludeFields: excludeFields,
+    varTheme: theme,
+    varRequestId: requestId,
 
     user,
     bldg,
     host: varHost,
-
     excludePages,
     excludeFields,
     theme,
-
-    // Flow 側が var* を拾う想定ならこちらも渡す（保険）
-    varExcludePages: excludePages,
-    varExcludeFields: excludeFields,
-    varTheme: theme,
+    requestId,
   };
 
   console.log("[api/flows/create-form-folder] calling Flow", {
@@ -263,16 +227,22 @@ export async function POST(req: NextRequest) {
     hasExcludePages: excludePages.length > 0,
     hasExcludeFields: excludeFields.length > 0,
     theme: theme || "",
+    requestId: requestId || "",
     url: safeUrl(FLOW_URL),
   });
 
+  INFLIGHT.add(lockKey);
   try {
-    // ★ Heroku 30秒制限を絶対に超えない設定（最大でも ~18s 前後で返す）
-    const { status, json, rawText } = await postJsonWithRetry(FLOW_URL, forwardBody, {
-      attempts: 2,
-      timeoutMs: 9_000,
-      backoffMs: 400,
-    });
+    // ★ここが重要：リトライしない（= Flow が二重起動しない）
+    // ★Heroku 30s 制限に収めるため 25s で強制タイムアウト
+    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, 25_000);
+
+    let json: any = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = { raw: text };
+    }
 
     if (status < 200 || status >= 300 || json?.ok === false) {
       return NextResponse.json(
@@ -281,7 +251,7 @@ export async function POST(req: NextRequest) {
           reason: json?.reason || json?.error || `Flow HTTP ${status}`,
           upstreamStatus: status,
           upstream: json,
-          upstreamRaw: typeof json?.raw === "string" ? json.raw : rawText,
+          upstreamRaw: typeof json?.raw === "string" ? json.raw : text,
         },
         { status: 502 },
       );
@@ -292,7 +262,6 @@ export async function POST(req: NextRequest) {
     const code = e?.code || e?.cause?.code;
     const msg = e?.message || String(e);
 
-    // ★ タイムアウトは 504 で返す（H12ではなく、UIが理由を取れる）
     if (code === "ETIMEDOUT") {
       return NextResponse.json(
         { ok: false, reason: "Flow 接続がタイムアウトしました（PowerPlatform到達不可/遅延）", code },
@@ -300,9 +269,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json(
-      { ok: false, reason: msg, code },
-      { status: 500 },
-    );
+    return NextResponse.json({ ok: false, reason: msg, code }, { status: 500 });
+  } finally {
+    INFLIGHT.delete(lockKey);
   }
 }

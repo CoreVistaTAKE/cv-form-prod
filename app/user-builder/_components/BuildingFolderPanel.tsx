@@ -1,144 +1,139 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
-import BuildStatus from "./BuildStatus.client";
+import { useMemo, useRef, useState } from "react";
 import type { Theme } from "@/utils/theme";
 
-type CreateRes = {
-  ok?: boolean;
-  traceId?: string;
+type BuiltInfo = {
+  user: string;
+  bldg: string;
   token?: string;
-  bldgFolderName?: string;
   statusPath?: string;
-  user?: string;
-  seq?: string;
+  [k: string]: any;
 };
 
 type Props = {
-  defaultUser?: string | null;
-  defaultHost?: string | null;
-
-  // ★運用A：新規作成時にだけ反映する meta
+  defaultUser: string;
   excludePages: string[];
   excludeFields: string[];
   theme?: Theme;
-
-  onBuilt?: (info: { user: string; bldg: string; token: string; statusPath: string; traceId?: string }) => void;
+  onBuilt?: (info: BuiltInfo) => void;
 };
 
-const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
-const ENV_DEFAULT_HOST = process.env.NEXT_PUBLIC_DEFAULT_HOST || "https://www.form.visone-ai.jp";
+function uuidLike() {
+  // ブラウザは crypto.randomUUID がある前提。無い場合のフォールバック。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c: any = globalThis.crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
-export default function BuildingFolderPanel({
-  defaultUser,
-  defaultHost,
-  excludePages,
-  excludeFields,
-  theme,
-  onBuilt,
-}: Props) {
-  const [user] = useState<string>(defaultUser || ENV_DEFAULT_USER);
-  const [host] = useState<string>(defaultHost || ENV_DEFAULT_HOST);
-  const [bldg, setBldg] = useState<string>("");
+export default function BuildingFolderPanel(props: Props) {
+  const { defaultUser, excludePages, excludeFields, theme, onBuilt } = props;
 
-  const [traceId, setTraceId] = useState<string | undefined>();
-  const [token, setToken] = useState<string | undefined>();
-  const [statusPath, setStatusPath] = useState<string | undefined>();
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | undefined>();
+  const [bldg, setBldg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [msg, setMsg] = useState<string>("");
 
-  const canRun = useMemo(() => !!bldg.trim(), [bldg]);
+  const counts = useMemo(() => {
+    return {
+      pages: Array.isArray(excludePages) ? excludePages.length : 0,
+      fields: Array.isArray(excludeFields) ? excludeFields.length : 0,
+    };
+  }, [excludePages, excludeFields]);
 
-  const onRun = useCallback(async () => {
-    setError(undefined);
-    setTraceId(undefined);
-    setToken(undefined);
-    setStatusPath(undefined);
+  const canSubmit = useMemo(() => {
+    return !!defaultUser && bldg.trim().length > 0 && !busy;
+  }, [defaultUser, bldg, busy]);
+
+  async function submit() {
+    // ★二重送信ブロック（クリック連打/Enter連打/イベント二重発火）
+    if (busyRef.current) return;
+
+    const user = (defaultUser || "").trim();
+    const name = bldg.trim();
+
+    if (!user || !name) {
+      setMsg("user / bldg が空です");
+      return;
+    }
+
+    const requestId = uuidLike();
+
+    busyRef.current = true;
+    setBusy(true);
+    setMsg("");
 
     try {
-      if (!bldg.trim()) throw new Error("建物名は必須です。");
-      setRunning(true);
-
-      // ★Flow直叩き禁止。サーバAPIにプロキシさせる
-      // ★運用A：exclude/theme はここでだけ渡す（作成後は修正不可）
-      const res = await fetch("/api/flows/create-form-folder", {
+      const r = await fetch("/api/flows/create-form-folder", {
         method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          varUser: user,
-          varBldg: bldg.trim(),
-          varHost: host,
-          excludePages: Array.isArray(excludePages) ? excludePages : [],
-          excludeFields: Array.isArray(excludeFields) ? excludeFields : [],
-          theme: typeof theme === "string" ? theme : "",
+          requestId,
+          user,
+          bldg: name,
+          excludePages: excludePages ?? [],
+          excludeFields: excludeFields ?? [],
+          theme: theme ?? "",
         }),
       });
 
-      const txt = await res.text().catch(() => "");
-      if (!res.ok) throw new Error(`create-folder HTTP ${res.status} ${txt}`);
+      const t = await r.text().catch(() => "");
+      const j = t ? JSON.parse(t) : {};
 
-      const json: CreateRes = txt ? JSON.parse(txt) : {};
-      if (json?.ok === false) throw new Error("create-folder returned ok:false");
-
-      const folderName = json.bldgFolderName || json.token;
-      const stPath = json.statusPath;
-
-      if (!folderName || !stPath) {
-        throw new Error("create-folder 応答に token(bldgFolderName) または statusPath がありません。");
+      if (!r.ok || j?.ok === false) {
+        const reason = j?.reason || `create-folder HTTP ${r.status}`;
+        setMsg(`${reason}${j?.code ? ` (${j.code})` : ""}`);
+        return;
       }
 
-      setTraceId(json.traceId);
-      setToken(folderName);
-      setStatusPath(stPath);
-
-      onBuilt?.({
+      const info: BuiltInfo = {
         user,
-        bldg: bldg.trim(),
-        token: folderName,
-        statusPath: stPath,
-        traceId: json.traceId,
-      });
-    } catch (e: unknown) {
-      const msg =
-        typeof e === "object" && e !== null && "message" in e
-          ? String((e as { message?: unknown }).message)
-          : String(e);
-      setError(msg);
+        bldg: name,
+        token: j?.token,
+        statusPath: j?.statusPath || j?.status_path,
+        ...j,
+      };
+
+      setMsg("作成要求を送信しました。ステータス更新を待っています。");
+      onBuilt?.(info);
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
     } finally {
-      setRunning(false);
+      busyRef.current = false;
+      setBusy(false);
     }
-  }, [bldg, user, host, excludePages, excludeFields, theme, onBuilt]);
+  }
 
   return (
-    <div className="space-y-4">
-      <label className="flex flex-col">
-        <span className="form-text mb-1">建物名</span>
+    <div className="space-y-3">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+        className="flex items-center gap-2"
+        style={{ flexWrap: "wrap" }}
+      >
         <input
           className="input"
+          style={{ minWidth: 260 }}
+          placeholder="建物名（例：テストA）"
           value={bldg}
           onChange={(e) => setBldg(e.target.value)}
-          placeholder="例: テストビルA"
+          disabled={busy}
         />
-      </label>
 
-      <div className="flex items-center gap-3">
-        <button className="btn" onClick={onRun} disabled={!canRun || running}>
-          {running ? "実行中..." : "建物フォルダ作成 + URL発行"}
+        <button className="btn" type="submit" disabled={!canSubmit}>
+          {busy ? "作成中..." : "作成する"}
         </button>
-        {error && <span className="text-red-500 text-xs whitespace-pre-wrap">{error}</span>}
-      </div>
 
-      {token && statusPath && (
-        <div className="card">
-          <div className="form-text text-[11px] text-slate-500">traceId: {traceId || "-"}</div>
-          <div className="form-text text-xs">フォルダ名: {token}</div>
-          <div className="form-text text-[11px] text-slate-500">statusPath: {statusPath}</div>
-
-          <div className="mt-3">
-            <BuildStatus user={user} bldg={bldg.trim()} statusPath={statusPath} justTriggered={true} />
-          </div>
+        <div className="text-xs text-slate-500">
+          user: <b>{defaultUser}</b> / theme: <b>{theme || "(未設定)"}</b> / 非表示: <b>{counts.pages}</b>セクション・<b>{counts.fields}</b>項目
         </div>
-      )}
+      </form>
+
+      {msg && <div className="text-xs whitespace-pre-wrap" style={{ color: msg.includes("HTTP") || msg.includes("タイムアウト") ? "#dc2626" : "#64748b" }}>{msg}</div>}
     </div>
   );
 }
