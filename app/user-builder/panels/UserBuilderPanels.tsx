@@ -31,8 +31,9 @@ function SectionCard({
 type BuiltInfo = {
   user: string;
   bldg: string;
-  token: string;
-  statusPath: string;
+  /** Flow が必ず返すはずだが、型としては欠けても落ちないように optional にする */
+  token?: string;
+  statusPath?: string;
   traceId?: string;
 };
 
@@ -207,6 +208,7 @@ export default function UserBuilderPanels() {
             excludeFields={metaForCreate.excludeFields}
             theme={metaForCreate.theme as Theme | undefined}
             onBuilt={(info) => {
+              // ★ここがビルドエラー原因だった：info.token が string|undefined
               setBuilt({
                 user: info.user,
                 bldg: info.bldg,
@@ -328,16 +330,25 @@ export default function UserBuilderPanels() {
       </SectionCard>
 
       {/* 作成後の最小ステータス表示（簡素） */}
-      {built?.statusPath ? (
+      {built ? (
         <section className="card">
           <div className="form-title">作成結果</div>
-          <div className="text-sm mt-2">
-            <div>token: <b>{built.token}</b></div>
-            <div>statusPath: <code>{built.statusPath}</code></div>
-            {built.traceId ? <div>traceId: <code>{built.traceId}</code></div> : null}
+          <div className="text-sm mt-2 space-y-1">
+            <div>
+              token: <b>{built.token || "（未取得）"}</b>
+            </div>
+            <div>
+              statusPath: <code>{built.statusPath || "（未取得）"}</code>
+            </div>
+            {built.traceId ? (
+              <div>
+                traceId: <code>{built.traceId}</code>
+              </div>
+            ) : null}
           </div>
+
           <div className="text-xs text-slate-500 mt-2">
-            ※URL/QR/進捗の詳細表示は BuildStatus コンポーネントに統合可能（前チャットでは別コンポーネントで復活済）。
+            ※URL/QR/進捗の詳細表示は BuildStatus コンポーネントで表示してください（statusPath が取得できている場合のみ）。
           </div>
         </section>
       ) : null}
