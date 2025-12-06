@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
 import BuildingFolderPanel from "../_components/BuildingFolderPanel";
+import BuildStatus from "../_components/BuildStatus.client";
 
 function SectionCard({
   id,
@@ -32,7 +33,6 @@ function SectionCard({
 type BuiltInfo = {
   user: string;
   bldg: string;
-  /** Flow が必ず返すはずだが、型としては欠けても落ちないように optional にする */
   token?: string;
   statusPath?: string;
   traceId?: string;
@@ -42,9 +42,7 @@ const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
 
 function safeArrayOfString(v: any): string[] {
   if (!Array.isArray(v)) return [];
-  return v
-    .filter((x) => typeof x === "string" && x.trim())
-    .map((x) => x.trim());
+  return v.filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
 }
 
 function normalizeMeta(maybeMeta: any) {
@@ -55,7 +53,6 @@ function normalizeMeta(maybeMeta: any) {
 }
 
 export default function UserBuilderPanels() {
-  // Zustand は「全state購読」だとループの火種になるので selector で必要分のみ
   const initOnce = useBuilderStore((s) => s.initOnce);
   const hydrateFrom = useBuilderStore((s) => s.hydrateFrom);
   const setMeta = useBuilderStore((s) => s.setMeta);
@@ -68,10 +65,9 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  // 作成結果（ステータス表示用に最小限保持）
+  // ★作成要求の応答（BuildStatusに渡す）
   const [built, setBuilt] = useState<BuiltInfo | null>(null);
 
-  // BaseSystem ロード状態（運用A：作成時のみ編集可）
   const [baseReady, setBaseReady] = useState(false);
   const [bootErr, setBootErr] = useState<string>("");
 
@@ -79,12 +75,10 @@ export default function UserBuilderPanels() {
     initOnce();
   }, [initOnce]);
 
-  // テーマ適用（meta.theme 変更時）
   useEffect(() => {
     applyTheme((metaTheme as Theme) || "black");
   }, [metaTheme]);
 
-  // BaseSystem を読む（作成の前提）
   const loadBaseOnce = useCallback(async () => {
     setBootErr("");
     try {
@@ -119,7 +113,6 @@ export default function UserBuilderPanels() {
     void loadBaseOnce();
   }, [loadBaseOnce]);
 
-  // ===== フォームカラー（作成時のみ） =====
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
     { k: "white", name: "白", bg: "#ffffff", fg: "#111111", border: "#d9dfec" },
     { k: "black", name: "黒", bg: "#141d3d", fg: "#eef3ff", border: "#2b3a6f" },
@@ -129,7 +122,6 @@ export default function UserBuilderPanels() {
     { k: "green", name: "緑", bg: "#5ce0b1", fg: "#0f241e", border: "#234739" },
   ];
 
-  // ===== 対象外(非適用) UI =====
   const sectionPages = useMemo(() => pages.filter((p) => p.type === "section"), [pages]);
 
   const fieldsByPage = useMemo(() => {
@@ -154,6 +146,7 @@ export default function UserBuilderPanels() {
 
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
     if (!baseReady) return;
+
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -170,6 +163,7 @@ export default function UserBuilderPanels() {
 
   const toggleFieldExclude = (fid: string) => {
     if (!baseReady) return;
+
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -179,7 +173,6 @@ export default function UserBuilderPanels() {
     commitExclude(nextPages, nextFields);
   };
 
-  // ===== Create 用に渡す meta =====
   const metaForCreate = useMemo(() => {
     const excludePages = safeArrayOfString(metaExcludePages);
     const excludeFields = safeArrayOfString(metaExcludeFields);
@@ -203,22 +196,35 @@ export default function UserBuilderPanels() {
         {!baseReady ? (
           <div className="text-xs text-slate-500">BaseSystem を読み込み中です…</div>
         ) : (
-          <BuildingFolderPanel
-            defaultUser={lookUser}
-            excludePages={metaForCreate.excludePages}
-            excludeFields={metaForCreate.excludeFields}
-            theme={metaForCreate.theme as Theme | undefined}
-            onBuilt={(info) => {
-              // ★ここがビルドエラー原因だった：info.token が string|undefined
-              setBuilt({
-                user: info.user,
-                bldg: info.bldg,
-                token: info.token,
-                statusPath: info.statusPath,
-                traceId: (info as any)?.traceId,
-              });
-            }}
-          />
+          <div>
+            <BuildingFolderPanel
+              defaultUser={lookUser}
+              excludePages={metaForCreate.excludePages}
+              excludeFields={metaForCreate.excludeFields}
+              theme={metaForCreate.theme as Theme | undefined}
+              onBuilt={(info) => {
+                setBuilt({
+                  user: info.user,
+                  bldg: info.bldg,
+                  token: info.token,
+                  statusPath: info.statusPath,
+                  traceId: (info as any)?.traceId,
+                });
+              }}
+            />
+
+            {/* ★作成中/作成結果はここ（建物枠の直下）に BuildStatus で表示 */}
+            {built?.statusPath ? (
+              <BuildStatus
+                user={built.user}
+                bldg={built.bldg}
+                statusPath={built.statusPath}
+                token={built.token}
+                traceId={built.traceId}
+                justTriggered={true}
+              />
+            ) : null}
+          </div>
         )}
       </SectionCard>
 
@@ -330,29 +336,7 @@ export default function UserBuilderPanels() {
         )}
       </SectionCard>
 
-      {/* 作成後の最小ステータス表示（簡素） */}
-      {built ? (
-        <section className="card">
-          <div className="form-title">作成結果</div>
-          <div className="text-sm mt-2 space-y-1">
-            <div>
-              token: <b>{built.token || "（未取得）"}</b>
-            </div>
-            <div>
-              statusPath: <code>{built.statusPath || "（未取得）"}</code>
-            </div>
-            {built.traceId ? (
-              <div>
-                traceId: <code>{built.traceId}</code>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="text-xs text-slate-500 mt-2">
-            ※URL/QR/進捗の詳細表示は BuildStatus コンポーネントで表示してください（statusPath が取得できている場合のみ）。
-          </div>
-        </section>
-      ) : null}
+      {/* ★ここにあった「作成結果」カードは削除（BuildStatus に統合） */}
     </div>
   );
 }

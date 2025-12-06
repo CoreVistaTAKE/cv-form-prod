@@ -51,16 +51,25 @@ function getVarHost() {
   return "";
 }
 
-function validateBldgName(nameRaw: string) {
+/**
+ * NOTE:
+ * - 「空」は通常状態なのでエラー扱いしない（赤字を出さない）
+ * - 送信時にだけ必須チェックする
+ */
+function validateBldgNameNonEmptyOnly(nameRaw: string) {
   const name = (nameRaw || "").trim();
 
-  if (!name) return "建物名が空です。";
+  // 空はここではOK（通常状態）
+  if (!name) return "";
+
   if (name.length > 80) return "建物名が長すぎます（80文字以内推奨）。";
 
+  // SharePoint/OneDrive フォルダ名で事故りやすい禁止文字
   if (/[\/\\:*?"<>|]/.test(name)) {
     return '建物名に使用できない文字が含まれています（/ \\ : * ? " < > |）。';
   }
 
+  // 末尾ドット/スペースは事故りやすい
   if (/[.\s]$/.test(name)) {
     return "建物名の末尾に「.」または空白は使えません。";
   }
@@ -75,13 +84,13 @@ export default function BuildingFolderPanel(props: Props) {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [msg, setMsg] = useState<string>("");
-  const [lastRequestId, setLastRequestId] = useState<string>("");
 
-  const nameErr = useMemo(() => validateBldgName(bldg), [bldg]);
+  const nonEmptyValidation = useMemo(() => validateBldgNameNonEmptyOnly(bldg), [bldg]);
 
   const canSubmit = useMemo(() => {
-    return !!defaultUser && !nameErr && bldg.trim().length > 0 && !busy;
-  }, [defaultUser, bldg, busy, nameErr]);
+    // ボタンは「入力がある時だけ」押せる
+    return !!defaultUser && bldg.trim().length > 0 && !nonEmptyValidation && !busy;
+  }, [defaultUser, bldg, nonEmptyValidation, busy]);
 
   async function submit() {
     if (busyRef.current) return;
@@ -93,14 +102,21 @@ export default function BuildingFolderPanel(props: Props) {
       setMsg("user が空です（defaultUser が未設定）。");
       return;
     }
-    const vErr = validateBldgName(name);
+
+    // ★必須チェックは「送信時だけ」
+    if (!name) {
+      setMsg(""); // 空は通常。赤字も出さない。
+      return;
+    }
+
+    // ★禁止文字などは送信時に弾く（ここは出してOK）
+    const vErr = validateBldgNameNonEmptyOnly(name);
     if (vErr) {
       setMsg(vErr);
       return;
     }
 
     const requestId = uuidLike();
-    setLastRequestId(requestId);
 
     busyRef.current = true;
     setBusy(true);
@@ -143,7 +159,7 @@ export default function BuildingFolderPanel(props: Props) {
         const reason = j?.reason || `create-folder HTTP ${r.status}`;
 
         if (r.status === 409 || code === "INFLIGHT") {
-          setMsg("同じ建物の作成がすでに実行中です。少し待って進捗を確認してください。（INFLIGHT）");
+          setMsg("同じ建物の作成がすでに実行中です。少し待って進捗をご確認ください。");
           return;
         }
 
@@ -160,7 +176,8 @@ export default function BuildingFolderPanel(props: Props) {
         ...j,
       };
 
-      setMsg("作成要求を送信しました。ステータス更新を待っています。");
+      // ここで msg を強く出す必要なし。BuildStatus 側で見せる。
+      setMsg("");
       onBuilt?.(info);
     } catch (e: any) {
       setMsg(e?.message || String(e));
@@ -170,8 +187,8 @@ export default function BuildingFolderPanel(props: Props) {
     }
   }
 
-  const isErrorMsg =
-    msg.includes("HTTP") || msg.includes("タイムアウト") || msg.includes("失敗") || msg.includes("INFLIGHT");
+  const isHardError =
+    msg.includes("HTTP") || msg.includes("タイムアウト") || msg.includes("INFLIGHT") || msg.includes("失敗");
 
   return (
     <div className="space-y-3">
@@ -186,7 +203,7 @@ export default function BuildingFolderPanel(props: Props) {
         <input
           className="input"
           style={{ minWidth: 260 }}
-          placeholder="建物名（例：FirstService_001_テストビル）"
+          placeholder="建物フォルダ名（例：FirstService_001_テストビル）"
           value={bldg}
           onChange={(e) => setBldg(e.target.value)}
           disabled={busy}
@@ -197,21 +214,10 @@ export default function BuildingFolderPanel(props: Props) {
         </button>
       </form>
 
-      {nameErr && (
-        <div className="text-xs whitespace-pre-wrap" style={{ color: "#b91c1c" }}>
-          {nameErr}
-        </div>
-      )}
-
-      {msg && (
-        <div className="text-xs whitespace-pre-wrap" style={{ color: isErrorMsg ? "#dc2626" : "#64748b" }}>
+      {/* 空欄は通常なので、赤字を出さない。必要なら送信時 msg のみ */}
+      {!!msg && (
+        <div className="text-xs whitespace-pre-wrap" style={{ color: isHardError ? "#dc2626" : "#64748b" }}>
           {msg}
-        </div>
-      )}
-
-      {!!lastRequestId && (
-        <div className="text-[11px] text-slate-400">
-          requestId: <span className="font-mono">{lastRequestId}</span>
         </div>
       )}
     </div>

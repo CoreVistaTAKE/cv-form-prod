@@ -6,12 +6,16 @@ type Props = {
   user?: string;
   bldg?: string;
   statusPath?: string;
+
+  /** create-form-folder の応答から渡す（表示・デバッグ用） */
+  token?: string;
+  traceId?: string;
+
   justTriggered?: boolean;
 };
 
 type AnyObj = Record<string, any>;
 
-/** 疑似進捗：フォルダ作成の想定時間（秒） */
 const TOTAL_SECONDS = 40;
 
 function pickFirstString(obj: AnyObj, keys: string[]) {
@@ -54,54 +58,31 @@ function computeFinished(raw: AnyObj) {
   const finishedByFlags =
     s?.finished === true || s?.complete === true || s?.completed === true || raw?.finished === true;
 
-  const finishedByCounts =
-    Number.isFinite(done) && Number.isFinite(total) && total > 0 && done >= total;
+  const finishedByCounts = Number.isFinite(done) && Number.isFinite(total) && total > 0 && done >= total;
 
   const finishedByPhase = typeof phase === "string" && /done|complete|completed|finished|success/i.test(phase);
 
   return Boolean(finishedByFlags || finishedByCounts || finishedByPhase);
 }
 
-/**
- * 要件：40秒の疑似進捗で、15/30/45/65/85% のタイミングで文言を切替。
- * ※「AI」は商品表現としての“自動処理”の意味で使う（完了断定はしない）
- */
 function aiFolderCreateMessage(pct: number) {
   if (pct < 15) {
-    return {
-      title: "受付・準備中",
-      detail: "AI（自動処理）が入力値を検証し、フォルダ作成ジョブを起票しています。",
-    };
+    return { title: "受付・準備中", detail: "AI（自動処理）が入力値を検証し、フォルダ作成ジョブを起票しています。" };
   }
   if (pct < 30) {
-    return {
-      title: "テンプレートをコピー中",
-      detail: "AI（自動処理）が BaseSystem をコピーして、建物フォルダの土台を作っています。",
-    };
+    return { title: "テンプレートをコピー中", detail: "AI（自動処理）が BaseSystem をコピーして、建物フォルダの土台を作っています。" };
   }
   if (pct < 45) {
-    return {
-      title: "フォルダ構成を生成中",
-      detail: "AI（自動処理）が form / originals の構成を作成し、命名ルールを適用しています。",
-    };
+    return { title: "フォルダ構成を生成中", detail: "AI（自動処理）が form / originals の構成を作成し、命名ルールを適用しています。" };
   }
   if (pct < 65) {
-    return {
-      title: "フォーム定義を反映中",
-      detail: "AI（自動処理）が テーマ・対象外(非適用) 設定をフォームJSONへ反映して保存しています。",
-    };
+    return { title: "フォーム定義を反映中", detail: "AI（自動処理）が テーマ・対象外(非適用) をフォームJSONへ反映して保存しています。" };
   }
   if (pct < 85) {
-    return {
-      title: "配布セットを生成中",
-      detail: "AI（自動処理）が URL と QR を生成し、配布できる状態へ整えています。",
-    };
+    return { title: "配布セットを生成中", detail: "AI（自動処理）が URL と QR を生成し、配布できる状態へ整えています。" };
   }
   if (pct < 100) {
-    return {
-      title: "最終チェック中",
-      detail: "AI（自動処理）が Excel 雛形のリネームや整合性チェックを実行しています。",
-    };
+    return { title: "最終チェック中", detail: "AI（自動処理）が Excel 雛形のリネームや整合性チェックを実行しています。" };
   }
   return {
     title: "反映待ち",
@@ -117,13 +98,12 @@ async function postJson(url: string, payload: any, signal?: AbortSignal) {
     cache: "no-store",
     signal,
   });
-
   const t = await r.text().catch(() => "");
   const j = safeJsonParse(t);
   return { ok: r.ok, status: r.status, json: j, rawText: t };
 }
 
-export default function BuildStatus({ user, bldg, statusPath, justTriggered }: Props) {
+export default function BuildStatus({ user, bldg, statusPath, token, traceId, justTriggered }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>("");
   const [data, setData] = useState<AnyObj | null>(null);
@@ -156,27 +136,24 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
     const phase = pickFirstString(s, ["phase", "status", "state", "stepName", "message"]);
     const done = pickFirstNumber(s, ["done", "current", "step", "progress", "count", "completed"]);
     const total = pickFirstNumber(s, ["total", "max", "stepsTotal", "totalSteps", "target", "all"]);
-
     const finished = computeFinished(raw);
 
     const formUrl =
-      pickFirstString(raw, ["formUrl", "url", "publicUrl"]) ||
-      pickFirstString(s, ["formUrl", "url", "publicUrl"]);
-
+      pickFirstString(raw, ["formUrl", "url", "publicUrl"]) || pickFirstString(s, ["formUrl", "url", "publicUrl"]);
     const qrUrl =
-      pickFirstString(raw, ["qrUrl", "qr", "qrImageUrl"]) ||
-      pickFirstString(s, ["qrUrl", "qr", "qrImageUrl"]);
+      pickFirstString(raw, ["qrUrl", "qr", "qrImageUrl"]) || pickFirstString(s, ["qrUrl", "qr", "qrImageUrl"]);
+    const traceFromStatus =
+      pickFirstString(raw, ["traceId", "trace_id", "trace"]) || pickFirstString(s, ["traceId", "trace_id", "trace"]);
 
-    const traceId =
-      pickFirstString(raw, ["traceId", "trace_id", "trace"]) ||
-      pickFirstString(s, ["traceId", "trace_id", "trace"]);
+    const serverPercent =
+      Number.isFinite(done) && Number.isFinite(total) && total > 0
+        ? Math.max(0, Math.min(100, Math.round((done / total) * 100)))
+        : NaN;
 
-    const doneOk = Number.isFinite(done) ? done : NaN;
-    const totalOk = Number.isFinite(total) ? total : NaN;
-
-    return { phase, done: doneOk, total: totalOk, finished, formUrl, qrUrl, traceId, raw, status: s };
+    return { phase, done, total, serverPercent, finished, formUrl, qrUrl, traceFromStatus, raw };
   }, [data]);
 
+  // lifecycle
   useEffect(() => {
     stoppedRef.current = false;
     return () => {
@@ -185,7 +162,7 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
     };
   }, []);
 
-  // 疑似進捗タイマー（40秒）
+  // 40秒疑似進捗タイマー
   useEffect(() => {
     if (!statusPath) return;
 
@@ -200,14 +177,25 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
     return () => window.clearInterval(timer);
   }, [statusPath]);
 
+  // 表示％（1〜100、かつ減らさない）
+  const pctRef = useRef<number>(1);
+  useEffect(() => {
+    pctRef.current = 1;
+  }, [statusPath]);
+
   const pseudoPct = useMemo(() => {
     const raw = Math.round((elapsed / TOTAL_SECONDS) * 100);
-    // 要件：1〜100
     return Math.max(1, Math.min(100, raw));
   }, [elapsed]);
 
-  const displayPct = view.finished ? 100 : pseudoPct;
-  const aiMsg = useMemo(() => aiFolderCreateMessage(displayPct), [displayPct]);
+  const displayPct = useMemo(() => {
+    const base = Number.isFinite(view.serverPercent) ? Math.max(pseudoPct, view.serverPercent) : pseudoPct;
+    const next = Math.max(pctRef.current, base);
+    pctRef.current = next;
+    return view.finished ? 100 : next;
+  }, [pseudoPct, view.serverPercent, view.finished]);
+
+  const msg = useMemo(() => (view.finished ? null : aiFolderCreateMessage(displayPct)), [displayPct, view.finished]);
 
   const fetchStatusOnce = useCallback(async () => {
     const p = payloadRef.current;
@@ -232,11 +220,8 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
 
       const j = (last?.json ?? {}) as AnyObj;
 
-      if (j?.ok === false) {
-        setErr(j?.reason || "ステータス取得に失敗しました。");
-      } else if (!last?.ok && last?.status) {
-        setErr(`ステータス取得 HTTP ${last.status}`);
-      }
+      if (j?.ok === false) setErr(j?.reason || "ステータス取得に失敗しました。");
+      else if (!last?.ok && last?.status) setErr(`ステータス取得 HTTP ${last.status}`);
 
       setData(j);
       return { finished: computeFinished(j) };
@@ -249,7 +234,7 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
     }
   }, []);
 
-  // ポーリング（完了したら止める）
+  // ポーリング
   useEffect(() => {
     if (!statusPath) return;
 
@@ -258,22 +243,15 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
 
     const fastMs = 1500;
     const slowMs = 5000;
-    const maxMs = 15 * 60 * 1000;
 
     const loop = async () => {
       if (!active || stoppedRef.current) return;
 
       const r = await fetchStatusOnce();
       if (!active || stoppedRef.current) return;
-
       if (r.finished) return;
 
       const elapsedMs = Date.now() - startedAtRef.current;
-      if (elapsedMs > maxMs) {
-        setErr((prev) => prev || "処理が長引いています。混雑か、status 連携未整備の可能性があります（更新で再取得してください）。");
-        return;
-      }
-
       const interval = justTriggered && elapsedMs < 60_000 ? fastMs : slowMs;
       timer = setTimeout(loop, interval);
     };
@@ -287,15 +265,19 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
   }, [statusPath, justTriggered, fetchStatusOnce]);
 
   if (!statusPath) {
-    return <div className="text-xs text-slate-500">statusPath がありません。</div>;
+    return (
+      <div className="mt-3 text-xs text-yellow-700">
+        statusPath が返っていません。Flow の 202 応答で statusPath を返す必要があります。
+      </div>
+    );
   }
 
   return (
-    <div className="card space-y-4">
+    <div className="mt-4 card space-y-4">
       <div>
-        <div className="form-title mb-1">建物フォルダを作成しています</div>
+        <div className="form-title mb-1">作成状況</div>
         <p className="form-text text-sm" style={{ opacity: 0.85 }}>
-          目安：{TOTAL_SECONDS}秒前後。ブラウザを閉じずに、そのままお待ちください。
+          目安：{TOTAL_SECONDS}秒前後（混雑時は遅延します）
         </p>
       </div>
 
@@ -313,18 +295,19 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
       </div>
 
       <div>
-        <div className="form-title text-base mb-1">{view.finished ? "完了" : aiMsg.title}</div>
+        <div className="form-title text-base mb-1">{view.finished ? "作成完了" : msg?.title}</div>
         <p className="form-text text-sm" style={{ opacity: 0.9 }}>
           {view.finished
-            ? "建物フォルダ作成が完了しました。URL/QR を配布できます。"
-            : aiMsg.detail}
+            ? "建物フォルダ作成が完了しました。URL/QR が表示されていれば配布できます。"
+            : msg?.detail}
         </p>
 
-        {view.phase && (
+        {/* 実ステータスが返ってくるなら併記 */}
+        {view.phase ? (
           <div className="text-xs text-slate-500 mt-1">
             実ステータス: <b>{view.phase}</b>
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
@@ -332,35 +315,44 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
           {busy ? "更新中..." : "更新"}
         </button>
 
-        <div className="text-xs text-slate-500">
-          statusPath: <span className="font-mono">{statusPath}</span>
-        </div>
-
-        {view.traceId ? (
-          <div className="text-xs text-slate-500">
-            traceId: <span className="font-mono">{view.traceId}</span>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-        {view.formUrl && (
+        {view.formUrl ? (
           <a className="btn" href={view.formUrl} target="_blank" rel="noreferrer">
             フォームURLを開く
           </a>
-        )}
-        {view.qrUrl && (
+        ) : null}
+
+        {view.qrUrl ? (
           <a className="btn-secondary" href={view.qrUrl} target="_blank" rel="noreferrer">
             QRを開く
           </a>
-        )}
+        ) : null}
       </div>
 
-      {err && <div className="text-xs text-red-600 whitespace-pre-wrap">{err}</div>}
+      {err ? <div className="text-xs text-red-600 whitespace-pre-wrap">{err}</div> : null}
 
       <details className="border border-slate-200 rounded-md bg-white px-3 py-2">
-        <summary className="cursor-pointer text-xs text-slate-500">ステータスJSON（デバッグ）</summary>
-        <pre className="text-xs overflow-auto mt-2">{JSON.stringify(view.raw, null, 2)}</pre>
+        <summary className="cursor-pointer text-xs text-slate-500">詳細（必要な時だけ）</summary>
+
+        <div className="text-xs mt-2 space-y-1">
+          {token ? (
+            <div>
+              token: <span className="font-mono">{token}</span>
+            </div>
+          ) : null}
+          <div>
+            statusPath: <span className="font-mono">{statusPath}</span>
+          </div>
+          {(traceId || view.traceFromStatus) ? (
+            <div>
+              traceId: <span className="font-mono">{traceId || view.traceFromStatus}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <details className="mt-3 border border-slate-200 rounded-md bg-white px-3 py-2">
+          <summary className="cursor-pointer text-xs text-slate-500">ステータスJSON（デバッグ）</summary>
+          <pre className="text-xs overflow-auto mt-2">{JSON.stringify(view.raw, null, 2)}</pre>
+        </details>
       </details>
     </div>
   );
