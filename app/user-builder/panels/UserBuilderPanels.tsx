@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
 import BuildingFolderPanel from "../_components/BuildingFolderPanel";
-import BuildStatus from "../_components/BuildStatus.client";
 
 function SectionCard({
   id,
@@ -29,11 +28,12 @@ function SectionCard({
   );
 }
 
-type StatusInfo = {
-  user?: string;
-  bldg?: string;
-  statusPath?: string;
-  token?: string;
+type BuiltInfo = {
+  user: string;
+  bldg: string;
+  token: string;
+  statusPath: string;
+  traceId?: string;
 };
 
 const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
@@ -53,7 +53,7 @@ function normalizeMeta(maybeMeta: any) {
 }
 
 export default function UserBuilderPanels() {
-  // Zustand: 必要なものだけ selector で購読（無限ループ/過剰再レンダー回避）
+  // Zustand は「全state購読」だとループの火種になるので selector で必要分のみ
   const initOnce = useBuilderStore((s) => s.initOnce);
   const hydrateFrom = useBuilderStore((s) => s.hydrateFrom);
   const setMeta = useBuilderStore((s) => s.setMeta);
@@ -66,31 +66,31 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  // Base 読み込みエラー表示（必要最小限）
-  const [bootMsg, setBootMsg] = useState("");
-  // 作成後ステータス（この画面では「作成した時だけ」表示）
-  const [statusInfo, setStatusInfo] = useState<StatusInfo | null>(null);
+  // 作成結果（ステータス表示用に最小限保持）
+  const [built, setBuilt] = useState<BuiltInfo | null>(null);
+
+  // BaseSystem ロード状態（運用A：作成時のみ編集可）
+  const [baseReady, setBaseReady] = useState(false);
+  const [bootErr, setBootErr] = useState<string>("");
 
   useEffect(() => {
     initOnce();
   }, [initOnce]);
 
-  // meta.theme 変更時に即反映
+  // テーマ適用（meta.theme 変更時）
   useEffect(() => {
     applyTheme((metaTheme as Theme) || "black");
   }, [metaTheme]);
 
-  // BaseSystem をサーバから読む（この画面は “作成専用” のため、常に base を基準にする）
-  const loadBaseSilently = useCallback(async () => {
-    setBootMsg("");
-    setStatusInfo(null);
+  // BaseSystem を読む（作成の前提）
+  const loadBaseOnce = useCallback(async () => {
+    setBootErr("");
     try {
       const r = await fetch("/api/forms/read-base", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ varUser: lookUser }),
       });
-
       const t = await r.text();
       if (!r.ok) throw new Error(`read-base HTTP ${r.status} ${t}`);
 
@@ -105,16 +105,19 @@ export default function UserBuilderPanels() {
         excludeFields: n.excludeFields,
         ...(n.theme ? { theme: n.theme } : {}),
       });
+
+      setBaseReady(true);
     } catch (e: any) {
-      setBootMsg(e?.message || String(e));
+      setBootErr(e?.message || String(e));
+      setBaseReady(false);
     }
   }, [hydrateFrom, setMeta, lookUser]);
 
   useEffect(() => {
-    void loadBaseSilently();
-  }, [loadBaseSilently]);
+    void loadBaseOnce();
+  }, [loadBaseOnce]);
 
-  // ===== フォームカラー =====
+  // ===== フォームカラー（作成時のみ） =====
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
     { k: "white", name: "白", bg: "#ffffff", fg: "#111111", border: "#d9dfec" },
     { k: "black", name: "黒", bg: "#141d3d", fg: "#eef3ff", border: "#2b3a6f" },
@@ -124,7 +127,7 @@ export default function UserBuilderPanels() {
     { k: "green", name: "緑", bg: "#5ce0b1", fg: "#0f241e", border: "#234739" },
   ];
 
-  // ===== 対象外(非適用) =====
+  // ===== 対象外(非適用) UI =====
   const sectionPages = useMemo(() => pages.filter((p) => p.type === "section"), [pages]);
 
   const fieldsByPage = useMemo(() => {
@@ -136,16 +139,11 @@ export default function UserBuilderPanels() {
     return m;
   }, [fields]);
 
-  const excludedPages = useMemo(
-    () => new Set<string>(safeArrayOfString(metaExcludePages)),
-    [metaExcludePages],
-  );
-  const excludedFields = useMemo(
-    () => new Set<string>(safeArrayOfString(metaExcludeFields)),
-    [metaExcludeFields],
-  );
+  const excludedPages = useMemo(() => new Set<string>(safeArrayOfString(metaExcludePages)), [metaExcludePages]);
+  const excludedFields = useMemo(() => new Set<string>(safeArrayOfString(metaExcludeFields)), [metaExcludeFields]);
 
   const commitExclude = (nextPages: Set<string>, nextFields: Set<string>) => {
+    if (!baseReady) return;
     setMeta({
       excludePages: Array.from(nextPages),
       excludeFields: Array.from(nextFields),
@@ -153,11 +151,11 @@ export default function UserBuilderPanels() {
   };
 
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
+    if (!baseReady) return;
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
     const wasExcluded = nextPages.has(pageId);
-
     if (wasExcluded) {
       nextPages.delete(pageId);
       fieldIds.forEach((id) => nextFields.delete(id));
@@ -165,11 +163,11 @@ export default function UserBuilderPanels() {
       nextPages.add(pageId);
       fieldIds.forEach((id) => nextFields.add(id));
     }
-
     commitExclude(nextPages, nextFields);
   };
 
   const toggleFieldExclude = (fid: string) => {
+    if (!baseReady) return;
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -179,7 +177,7 @@ export default function UserBuilderPanels() {
     commitExclude(nextPages, nextFields);
   };
 
-  // ===== Create 用 meta（常に渡す）=====
+  // ===== Create 用に渡す meta =====
   const metaForCreate = useMemo(() => {
     const excludePages = safeArrayOfString(metaExcludePages);
     const excludeFields = safeArrayOfString(metaExcludeFields);
@@ -189,45 +187,42 @@ export default function UserBuilderPanels() {
 
   return (
     <div className="space-y-6">
-      {/* 1) 建物フォルダを作成する */}
+      {bootErr && (
+        <section className="card">
+          <div className="text-red-600 text-sm whitespace-pre-wrap">{bootErr}</div>
+          <button className="btn-secondary mt-3" onClick={() => void loadBaseOnce()}>
+            BaseSystem を再読込
+          </button>
+        </section>
+      )}
+
+      {/* 建物フォルダを作成する */}
       <SectionCard id="folder" title="建物フォルダを作成する">
-        {bootMsg && (
-          <div className="text-red-500 text-xs whitespace-pre-wrap mb-2">{bootMsg}</div>
+        {!baseReady ? (
+          <div className="text-xs text-slate-500">BaseSystem を読み込み中です…</div>
+        ) : (
+          <BuildingFolderPanel
+            defaultUser={lookUser}
+            excludePages={metaForCreate.excludePages}
+            excludeFields={metaForCreate.excludeFields}
+            theme={metaForCreate.theme as Theme | undefined}
+            onBuilt={(info) => {
+              setBuilt({
+                user: info.user,
+                bldg: info.bldg,
+                token: info.token,
+                statusPath: info.statusPath,
+                traceId: (info as any)?.traceId,
+              });
+            }}
+          />
         )}
-
-        <BuildingFolderPanel
-          defaultUser={lookUser}
-          excludePages={metaForCreate.excludePages}
-          excludeFields={metaForCreate.excludeFields}
-          theme={metaForCreate.theme as Theme | undefined}
-          onBuilt={(info) => {
-            // 作成した時だけステータス表示
-            setStatusInfo({
-              user: info.user,
-              bldg: info.bldg,
-              statusPath: info.statusPath,
-              token: info.token,
-            });
-          }}
-        />
-
-        {/* ステータス枠(カード)は廃止：作成後だけ直下に表示 */}
-        {statusInfo?.statusPath ? (
-          <div className="mt-4">
-            <BuildStatus
-              user={statusInfo.user}
-              bldg={statusInfo.bldg}
-              statusPath={statusInfo.statusPath}
-              justTriggered={true}
-            />
-          </div>
-        ) : null}
       </SectionCard>
 
-      {/* 2) 対象外(非適用)の設定 */}
+      {/* 対象外(非適用)の設定 */}
       <SectionCard id="exclude" title="対象外(非適用)の設定">
-        {sectionPages.length === 0 ? (
-          <div className="text-xs text-slate-500">（フォーム定義を読込中…）</div>
+        {!baseReady ? (
+          <div className="text-xs text-slate-500">BaseSystem 読み込み後に設定できます。</div>
         ) : (
           <div className="space-y-3">
             {sectionPages.map((p) => {
@@ -243,12 +238,7 @@ export default function UserBuilderPanels() {
               return (
                 <details key={p.id} className="border border-slate-300 rounded-md bg-white shadow-sm">
                   <summary className="cursor-pointer flex items-center justify-between px-3 py-2">
-                    <div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{p.title || "セクション"}</div>
-                      {p.description && (
-                        <div style={{ fontSize: 14, color: "#6B7280", marginTop: 2 }}>{p.description}</div>
-                      )}
-                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>{p.title || "セクション"}</div>
 
                     <button
                       type="button"
@@ -286,7 +276,7 @@ export default function UserBuilderPanels() {
                           return (
                             <label key={fid} className="flex items-center justify-between" style={{ fontSize: 14 }}>
                               <span>{label}</span>
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                                 <span
                                   style={{
                                     fontSize: 11,
@@ -314,25 +304,43 @@ export default function UserBuilderPanels() {
         )}
       </SectionCard>
 
-      {/* 3) フォームカラーの設定 */}
+      {/* フォームカラーの設定 */}
       <SectionCard id="color" title="フォームカラーの設定">
-        <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
-          {themeItems.map((t) => (
-            <button
-              key={t.k}
-              className="btn"
-              style={{ background: t.bg, color: t.fg, border: `1px solid ${t.border}` }}
-              onClick={() => {
-                setMeta({ theme: t.k });
-                applyTheme(t.k);
-              }}
-              title="作成時の theme を設定"
-            >
-              {t.name}
-            </button>
-          ))}
-        </div>
+        {!baseReady ? (
+          <div className="text-xs text-slate-500">BaseSystem 読み込み後に設定できます。</div>
+        ) : (
+          <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
+            {themeItems.map((t) => (
+              <button
+                key={t.k}
+                className="btn"
+                style={{ background: t.bg, color: t.fg, border: `1px solid ${t.border}` }}
+                onClick={() => {
+                  setMeta({ theme: t.k });
+                  applyTheme(t.k);
+                }}
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
       </SectionCard>
+
+      {/* 作成後の最小ステータス表示（簡素） */}
+      {built?.statusPath ? (
+        <section className="card">
+          <div className="form-title">作成結果</div>
+          <div className="text-sm mt-2">
+            <div>token: <b>{built.token}</b></div>
+            <div>statusPath: <code>{built.statusPath}</code></div>
+            {built.traceId ? <div>traceId: <code>{built.traceId}</code></div> : null}
+          </div>
+          <div className="text-xs text-slate-500 mt-2">
+            ※URL/QR/進捗の詳細表示は BuildStatus コンポーネントに統合可能（前チャットでは別コンポーネントで復活済）。
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
