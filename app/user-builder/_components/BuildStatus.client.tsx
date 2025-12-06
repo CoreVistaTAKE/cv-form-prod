@@ -11,8 +11,8 @@ type Props = {
 
 type AnyObj = Record<string, any>;
 
-/** 疑似進捗の目安（秒） ※完了判定には使わない */
-const TOTAL_SECONDS = 30;
+/** 疑似進捗：フォルダ作成の想定時間（秒） */
+const TOTAL_SECONDS = 40;
 
 function pickFirstString(obj: AnyObj, keys: string[]) {
   for (const k of keys) {
@@ -62,28 +62,51 @@ function computeFinished(raw: AnyObj) {
   return Boolean(finishedByFlags || finishedByCounts || finishedByPhase);
 }
 
-function pseudoMessage(elapsedSec: number) {
-  const t = elapsedSec;
-
-  if (t < 2) {
-    return { title: "受付中", detail: "作成要求を送信しています。" };
+/**
+ * 要件：40秒の疑似進捗で、15/30/45/65/85% のタイミングで文言を切替。
+ * ※「AI」は商品表現としての“自動処理”の意味で使う（完了断定はしない）
+ */
+function aiFolderCreateMessage(pct: number) {
+  if (pct < 15) {
+    return {
+      title: "受付・準備中",
+      detail: "AI（自動処理）が入力値を検証し、フォルダ作成ジョブを起票しています。",
+    };
   }
-  if (t < 7) {
-    return { title: "テンプレートをコピー中", detail: "BaseSystem を建物フォルダへ複製しています。" };
+  if (pct < 30) {
+    return {
+      title: "テンプレートをコピー中",
+      detail: "AI（自動処理）が BaseSystem をコピーして、建物フォルダの土台を作っています。",
+    };
   }
-  if (t < 12) {
-    return { title: "設定を適用中", detail: "対象外(非適用)・テーマ設定をフォーム定義へ反映しています。" };
+  if (pct < 45) {
+    return {
+      title: "フォルダ構成を生成中",
+      detail: "AI（自動処理）が form / originals の構成を作成し、命名ルールを適用しています。",
+    };
   }
-  if (t < 18) {
-    return { title: "URL / QR を生成中", detail: "配布用リンクと QR 画像を自動生成しています。" };
+  if (pct < 65) {
+    return {
+      title: "フォーム定義を反映中",
+      detail: "AI（自動処理）が テーマ・対象外(非適用) 設定をフォームJSONへ反映して保存しています。",
+    };
   }
-  if (t < 23) {
-    return { title: "雛形Excelを準備中", detail: "originals のファイル名を建物名に合わせて整えています。" };
+  if (pct < 85) {
+    return {
+      title: "配布セットを生成中",
+      detail: "AI（自動処理）が URL と QR を生成し、配布できる状態へ整えています。",
+    };
   }
-  if (t < 28) {
-    return { title: "保存・最終処理中", detail: "OneDrive/SharePoint へ保存し、整合性を確認しています。" };
+  if (pct < 100) {
+    return {
+      title: "最終チェック中",
+      detail: "AI（自動処理）が Excel 雛形のリネームや整合性チェックを実行しています。",
+    };
   }
-  return { title: "完了確認中", detail: "共有リンク発行などの最終処理を待っています（混雑時は少し長引きます）。" };
+  return {
+    title: "反映待ち",
+    detail: "想定時間に到達しました。完了反映（status/リンク取得）を待っています。混雑時はここで止まることがあります。",
+  };
 }
 
 async function postJson(url: string, payload: any, signal?: AbortSignal) {
@@ -106,7 +129,7 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
   const [data, setData] = useState<AnyObj | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
-  const stopRef = useRef(false);
+  const stoppedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const startedAtRef = useRef<number>(0);
 
@@ -120,6 +143,11 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
       varStatusPath: statusPath,
     };
   }, [user, bldg, statusPath]);
+
+  const payloadRef = useRef(payload);
+  useEffect(() => {
+    payloadRef.current = payload;
+  }, [payload]);
 
   const view = useMemo(() => {
     const raw = data || {};
@@ -145,41 +173,45 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
 
     const doneOk = Number.isFinite(done) ? done : NaN;
     const totalOk = Number.isFinite(total) ? total : NaN;
-    const percent =
-      Number.isFinite(doneOk) && Number.isFinite(totalOk) && totalOk > 0
-        ? Math.max(0, Math.min(100, Math.round((doneOk / totalOk) * 100)))
-        : NaN;
 
-    return { phase, done: doneOk, total: totalOk, percent, finished, formUrl, qrUrl, traceId, raw, status: s };
+    return { phase, done: doneOk, total: totalOk, finished, formUrl, qrUrl, traceId, raw, status: s };
   }, [data]);
 
-  // component life
   useEffect(() => {
-    stopRef.current = false;
+    stoppedRef.current = false;
     return () => {
-      stopRef.current = true;
+      stoppedRef.current = true;
       abortRef.current?.abort();
     };
   }, []);
 
-  // 疑似進捗タイマー（完了扱いにはしない）
+  // 疑似進捗タイマー（40秒）
   useEffect(() => {
     if (!statusPath) return;
 
-    const started = Date.now();
-    startedAtRef.current = started;
+    startedAtRef.current = Date.now();
     setElapsed(0);
 
     const timer = window.setInterval(() => {
-      const sec = (Date.now() - started) / 1000;
+      const sec = (Date.now() - startedAtRef.current) / 1000;
       setElapsed(sec);
     }, 200);
 
     return () => window.clearInterval(timer);
   }, [statusPath]);
 
+  const pseudoPct = useMemo(() => {
+    const raw = Math.round((elapsed / TOTAL_SECONDS) * 100);
+    // 要件：1〜100
+    return Math.max(1, Math.min(100, raw));
+  }, [elapsed]);
+
+  const displayPct = view.finished ? 100 : pseudoPct;
+  const aiMsg = useMemo(() => aiFolderCreateMessage(displayPct), [displayPct]);
+
   const fetchStatusOnce = useCallback(async () => {
-    if (!statusPath) return { j: {}, finished: false };
+    const p = payloadRef.current;
+    if (!p?.statusPath) return { finished: false };
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -192,14 +224,9 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
       const endpoints = ["/api/flows/get-build-status", "/api/registry/build-status"] as const;
 
       let last: any = null;
-
       for (const ep of endpoints) {
-        last = await postJson(ep, payload, controller.signal);
-
-        // 404 は次のエンドポイントへ（未実装・未配置の想定）
+        last = await postJson(ep, p, controller.signal);
         if (!last.ok && last.status === 404) continue;
-
-        // JSONが取れていれば採用（空でも採用する：statusファイルがまだ無いケースもある）
         break;
       }
 
@@ -208,22 +235,21 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
       if (j?.ok === false) {
         setErr(j?.reason || "ステータス取得に失敗しました。");
       } else if (!last?.ok && last?.status) {
-        // ok:false ではないがHTTPが失敗のケース
         setErr(`ステータス取得 HTTP ${last.status}`);
       }
 
       setData(j);
-      return { j, finished: computeFinished(j) };
+      return { finished: computeFinished(j) };
     } catch (e: any) {
-      if (e?.name === "AbortError") return { j: data || {}, finished: false };
+      if (e?.name === "AbortError") return { finished: false };
       setErr(e?.message || String(e));
-      return { j: data || {}, finished: false };
+      return { finished: false };
     } finally {
       setBusy(false);
     }
-  }, [payload, statusPath, data]);
+  }, []);
 
-  // ポーリング（完了したら止める / unmount で止める）
+  // ポーリング（完了したら止める）
   useEffect(() => {
     if (!statusPath) return;
 
@@ -232,19 +258,19 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
 
     const fastMs = 1500;
     const slowMs = 5000;
-    const maxMs = 15 * 60 * 1000; // 15min で打ち切り（無限ポーリング防止）
+    const maxMs = 15 * 60 * 1000;
 
     const loop = async () => {
-      if (!active || stopRef.current) return;
+      if (!active || stoppedRef.current) return;
 
-      const { finished } = await fetchStatusOnce();
-      if (!active || stopRef.current) return;
+      const r = await fetchStatusOnce();
+      if (!active || stoppedRef.current) return;
 
-      if (finished) return;
+      if (r.finished) return;
 
       const elapsedMs = Date.now() - startedAtRef.current;
       if (elapsedMs > maxMs) {
-        setErr((prev) => prev || "処理が長引いています。混雑か、status 連携未整備の可能性があります（更新ボタンで再取得してください）。");
+        setErr((prev) => prev || "処理が長引いています。混雑か、status 連携未整備の可能性があります（更新で再取得してください）。");
         return;
       }
 
@@ -252,7 +278,6 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
       timer = setTimeout(loop, interval);
     };
 
-    // 初回即時
     void loop();
 
     return () => {
@@ -265,36 +290,12 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
     return <div className="text-xs text-slate-500">statusPath がありません。</div>;
   }
 
-  const pseudo = pseudoMessage(elapsed);
-  const hasServerPercent = Number.isFinite(view.percent);
-
-  const pct = useMemo(() => {
-    if (view.finished) return 100;
-    if (hasServerPercent) return Math.max(0, Math.min(99, view.percent)); // 完了前に100にはしない
-    const p = Math.round((elapsed / TOTAL_SECONDS) * 100);
-    return Math.max(0, Math.min(98, p));
-  }, [view.finished, hasServerPercent, view.percent, elapsed]);
-
-  const statusTitle = view.finished
-    ? "完了"
-    : view.phase
-      ? view.phase
-      : pseudo.title;
-
-  const statusDetail = view.finished
-    ? "建物フォルダ作成が完了しました。URL/QR を配布できます。"
-    : view.phase
-      ? pseudo.detail
-      : pseudo.detail;
-
-  const showOver30sHint = !view.finished && !hasServerPercent && elapsed >= TOTAL_SECONDS;
-
   return (
     <div className="card space-y-4">
       <div>
         <div className="form-title mb-1">建物フォルダを作成しています</div>
         <p className="form-text text-sm" style={{ opacity: 0.85 }}>
-          ブラウザを閉じずに、そのままお待ちください。
+          目安：{TOTAL_SECONDS}秒前後。ブラウザを閉じずに、そのままお待ちください。
         </p>
       </div>
 
@@ -303,34 +304,25 @@ export default function BuildStatus({ user, bldg, statusPath, justTriggered }: P
           <div
             className="h-3 rounded-full transition-all duration-300"
             style={{
-              width: `${pct}%`,
+              width: `${displayPct}%`,
               backgroundColor: view.finished ? "#16a34a" : "#2563eb",
             }}
           />
         </div>
-        <div className="mt-1 text-xs text-slate-600 text-right">進捗 {pct}%</div>
-        {!hasServerPercent && (
-          <div className="mt-1 text-xs text-slate-500">
-            ※この進捗は目安です（Flow 側の status が未整備の場合は疑似進捗で案内します）
-          </div>
-        )}
-        {showOver30sHint && (
-          <div className="mt-1 text-xs text-yellow-700">
-            30秒を超えました。混雑か、status 連携が未整備の可能性があります。しばらく待って「更新」を押してください。
-          </div>
-        )}
+        <div className="mt-1 text-xs text-slate-600 text-right">進捗 {displayPct}%</div>
       </div>
 
-      <div className="space-y-1">
-        <div className="form-title text-base">{statusTitle}</div>
+      <div>
+        <div className="form-title text-base mb-1">{view.finished ? "完了" : aiMsg.title}</div>
         <p className="form-text text-sm" style={{ opacity: 0.9 }}>
-          {statusDetail}
+          {view.finished
+            ? "建物フォルダ作成が完了しました。URL/QR を配布できます。"
+            : aiMsg.detail}
         </p>
 
-        {Number.isFinite(view.done) && Number.isFinite(view.total) && view.total > 0 && (
-          <div className="text-xs text-slate-600">
-            実進捗: <b>{view.done}</b> / <b>{view.total}</b>{" "}
-            {Number.isFinite(view.percent) && <span className="text-slate-500">（{view.percent}%）</span>}
+        {view.phase && (
+          <div className="text-xs text-slate-500 mt-1">
+            実ステータス: <b>{view.phase}</b>
           </div>
         )}
       </div>

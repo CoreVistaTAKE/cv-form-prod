@@ -1,3 +1,4 @@
+// app/user-builder/panels/UserBuilderPanels.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";

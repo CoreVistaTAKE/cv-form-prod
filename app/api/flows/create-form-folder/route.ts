@@ -69,9 +69,6 @@ function originFromReq(req: NextRequest): string {
   return `${proto}://${host}`;
 }
 
-/**
- * Heroku 30s 制限より十分短く、Flow の「即時Response(202)」を前提にする。
- */
 async function httpsPostJsonIPv4(
   urlStr: string,
   payload: any,
@@ -131,14 +128,17 @@ function inflightKey(user: string, bldg: string) {
   return `${user}::${bldg}`;
 }
 
+// Heroku 30s 制限ギリ。Flow は「202即返し」が本命。
+const FLOW_ACK_TIMEOUT_MS = 28_000;
+
 export async function POST(req: NextRequest) {
-  const FLOW_URL =
-    process.env.FLOW_CREATE_FORM_FOLDER_URL ||
-    process.env.PA_CREATE_FORM_FOLDER_URL ||
-    "";
+  const FLOW_URL = process.env.FLOW_CREATE_FORM_FOLDER_URL || process.env.PA_CREATE_FORM_FOLDER_URL || "";
 
   if (!FLOW_URL) {
-    return NextResponse.json({ ok: false, reason: "FLOW_CREATE_FORM_FOLDER_URL がサーバー側で設定されていません。" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, reason: "FLOW_CREATE_FORM_FOLDER_URL がサーバー側で設定されていません。" },
+      { status: 500 },
+    );
   }
   try {
     // eslint-disable-next-line no-new
@@ -195,7 +195,6 @@ export async function POST(req: NextRequest) {
       excludeFields,
       theme,
 
-      // Flow 側が var* を拾う場合の保険
       varExcludePages: excludePages,
       varExcludeFields: excludeFields,
       varTheme: theme,
@@ -208,10 +207,10 @@ export async function POST(req: NextRequest) {
       hasExcludeFields: excludeFields.length > 0,
       theme: theme || "",
       url: safeUrl(FLOW_URL),
+      timeoutMs: FLOW_ACK_TIMEOUT_MS,
     });
 
-    // Flow は「先に 202 を返す」前提。ここは短め（例: 12s）。
-    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, 12_000);
+    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, FLOW_ACK_TIMEOUT_MS);
 
     let json: any = {};
     try {

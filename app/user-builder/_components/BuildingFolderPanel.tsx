@@ -23,7 +23,6 @@ type Props = {
 const CANONICAL_HOST = process.env.NEXT_PUBLIC_CANONICAL_HOST || "";
 
 function uuidLike() {
-  // ブラウザは crypto.randomUUID がある前提。無い場合のフォールバック。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c: any = globalThis.crypto;
   if (c?.randomUUID) return c.randomUUID();
@@ -42,7 +41,6 @@ function normalizeOrigin(input: string) {
   const s = (input || "").trim().replace(/\/+$/, "");
   if (!s) return "";
   if (/^https?:\/\//i.test(s)) return s;
-  // host だけ渡される運用を吸収（https 前提）
   return `https://${s}`;
 }
 
@@ -59,12 +57,10 @@ function validateBldgName(nameRaw: string) {
   if (!name) return "建物名が空です。";
   if (name.length > 80) return "建物名が長すぎます（80文字以内推奨）。";
 
-  // SharePoint/OneDrive フォルダ名で事故りやすい禁止文字を先に潰す
   if (/[\/\\:*?"<>|]/.test(name)) {
     return '建物名に使用できない文字が含まれています（/ \\ : * ? " < > |）。';
   }
 
-  // 末尾ドット/スペースは事故りやすい（Windows/SharePoint系）
   if (/[.\s]$/.test(name)) {
     return "建物名の末尾に「.」または空白は使えません。";
   }
@@ -81,13 +77,6 @@ export default function BuildingFolderPanel(props: Props) {
   const [msg, setMsg] = useState<string>("");
   const [lastRequestId, setLastRequestId] = useState<string>("");
 
-  const counts = useMemo(() => {
-    return {
-      pages: Array.isArray(excludePages) ? excludePages.length : 0,
-      fields: Array.isArray(excludeFields) ? excludeFields.length : 0,
-    };
-  }, [excludePages, excludeFields]);
-
   const nameErr = useMemo(() => validateBldgName(bldg), [bldg]);
 
   const canSubmit = useMemo(() => {
@@ -95,7 +84,6 @@ export default function BuildingFolderPanel(props: Props) {
   }, [defaultUser, bldg, busy, nameErr]);
 
   async function submit() {
-    // ★二重送信ブロック（クリック連打/Enter連打/イベント二重発火）
     if (busyRef.current) return;
 
     const user = (defaultUser || "").trim();
@@ -130,7 +118,6 @@ export default function BuildingFolderPanel(props: Props) {
           user,
           bldg: name,
 
-          // Flow/サーバ側どちらでも拾えるように冗長に渡す（互換用）
           varUser: user,
           varBldg: name,
           varHost,
@@ -155,7 +142,6 @@ export default function BuildingFolderPanel(props: Props) {
         const code = j?.code ? String(j.code) : "";
         const reason = j?.reason || `create-folder HTTP ${r.status}`;
 
-        // サーバ側 inflight lock 409 を UX 的に明確化
         if (r.status === 409 || code === "INFLIGHT") {
           setMsg("同じ建物の作成がすでに実行中です。少し待って進捗を確認してください。（INFLIGHT）");
           return;
@@ -184,7 +170,8 @@ export default function BuildingFolderPanel(props: Props) {
     }
   }
 
-  const isErrorMsg = msg.includes("HTTP") || msg.includes("タイムアウト") || msg.includes("失敗") || msg.includes("INFLIGHT");
+  const isErrorMsg =
+    msg.includes("HTTP") || msg.includes("タイムアウト") || msg.includes("失敗") || msg.includes("INFLIGHT");
 
   return (
     <div className="space-y-3">
@@ -199,7 +186,7 @@ export default function BuildingFolderPanel(props: Props) {
         <input
           className="input"
           style={{ minWidth: 260 }}
-          placeholder='建物名（例：FirstService_001_テストビル）'
+          placeholder="建物名（例：FirstService_001_テストビル）"
           value={bldg}
           onChange={(e) => setBldg(e.target.value)}
           disabled={busy}
@@ -208,11 +195,6 @@ export default function BuildingFolderPanel(props: Props) {
         <button className="btn" type="submit" disabled={!canSubmit}>
           {busy ? "作成中..." : "作成する"}
         </button>
-
-        <div className="text-xs text-slate-500">
-          user: <b>{defaultUser}</b> / theme: <b>{theme || "(未設定)"}</b> / 非表示: <b>{counts.pages}</b>セクション・
-          <b>{counts.fields}</b>項目
-        </div>
       </form>
 
       {nameErr && (
@@ -222,10 +204,7 @@ export default function BuildingFolderPanel(props: Props) {
       )}
 
       {msg && (
-        <div
-          className="text-xs whitespace-pre-wrap"
-          style={{ color: isErrorMsg ? "#dc2626" : "#64748b" }}
-        >
+        <div className="text-xs whitespace-pre-wrap" style={{ color: isErrorMsg ? "#dc2626" : "#64748b" }}>
           {msg}
         </div>
       )}
