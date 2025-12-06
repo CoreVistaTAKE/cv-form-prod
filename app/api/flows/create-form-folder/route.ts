@@ -1,3 +1,4 @@
+// app/api/flows/create-form-folder/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import https from "node:https";
 import dns from "node:dns";
@@ -15,8 +16,6 @@ try {
 type AnyRecord = Record<string, unknown>;
 
 type CreateReq = {
-  requestId?: unknown;
-
   user?: unknown;
   bldg?: unknown;
   host?: unknown;
@@ -60,6 +59,13 @@ function safeUrl(raw: string) {
   }
 }
 
+function normalizeUrlEnv(raw: string): string {
+  const s = (raw ?? "").toString().trim();
+  if (!s) return "";
+  // Heroku Config に "..." や '...' のまま入ってる事故を吸収
+  return s.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1").trim();
+}
+
 function originFromReq(req: NextRequest): string {
   const proto =
     req.headers.get("x-forwarded-proto") ||
@@ -73,6 +79,10 @@ function originFromReq(req: NextRequest): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * Node https で ipv4 を優先しつつ、指定msで強制タイムアウト
+ * ※Heroku router は30sで落とすので、timeoutMsは 28-29s 程度が上限
+ */
 async function httpsPostJsonIPv4(
   urlStr: string,
   payload: any,
@@ -87,7 +97,6 @@ async function httpsPostJsonIPv4(
   const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body).toString(),
-    "User-Agent": "corevista-form/flow-proxy",
   };
 
   return await new Promise((resolve, reject) => {
@@ -95,11 +104,11 @@ async function httpsPostJsonIPv4(
       {
         protocol: u.protocol,
         hostname: u.hostname,
-        port: u.port ? Number(u.port) : 443,
+        port: u.port ? Number(u.port) : u.protocol === "http:" ? 80 : 443,
         path: `${u.pathname}${u.search}`,
         method: "POST",
         headers,
-        family: 4, // ★IPv4固定
+        family: 4,
       } as any,
       (res) => {
         let data = "";
@@ -135,20 +144,33 @@ async function httpsPostJsonIPv4(
   });
 }
 
-// ★同一(bldg,user)の同時実行を止める（Heroku 1 dyno 前提の最低限デデュープ）
+async function postOnce(url: string, payload: any, timeoutMs: number) {
+  const { status, text } = await httpsPostJsonIPv4(url, payload, timeoutMs);
+
+  let json: any = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+
+  return { status, json, rawText: text };
+}
+
+// ===== 二重送信対策（同一 dyno 内だけ）=====
 declare global {
   // eslint-disable-next-line no-var
-  var __CV_CREATE_FORM_FOLDER_INFLIGHT__: Set<string> | undefined;
+  var __cvCreateFolderInflight: Map<string, number> | undefined;
 }
-const INFLIGHT = (globalThis.__CV_CREATE_FORM_FOLDER_INFLIGHT__ ??= new Set<string>());
+function inflightMap(): Map<string, number> {
+  if (!globalThis.__cvCreateFolderInflight) globalThis.__cvCreateFolderInflight = new Map();
+  return globalThis.__cvCreateFolderInflight;
+}
 
 export async function POST(req: NextRequest) {
-  const FLOW_URL_RAW =
-    process.env.FLOW_CREATE_FORM_FOLDER_URL ||
-    process.env.PA_CREATE_FORM_FOLDER_URL ||
-    "";
-
-  const FLOW_URL = FLOW_URL_RAW.trim().replace(/^"+|"+$/g, ""); // ★Heroku config で引用符が混入しても耐える
+  const FLOW_URL = normalizeUrlEnv(
+    process.env.FLOW_CREATE_FORM_FOLDER_URL || process.env.PA_CREATE_FORM_FOLDER_URL || "",
+  );
 
   if (!FLOW_URL) {
     return NextResponse.json(
@@ -176,22 +198,12 @@ export async function POST(req: NextRequest) {
 
   const user = (toStr(body.user) || toStr(body.varUser)).trim();
   const bldg = (toStr(body.bldg) || toStr(body.varBldg)).trim();
-  const requestId = toStr(body.requestId).trim();
-
   const varHost = (toStr(body.varHost) || toStr(body.host)).trim() || originFromReq(req);
 
   if (!user || !bldg) {
     return NextResponse.json(
       { ok: false, reason: "missing required fields: user, bldg", got: { user: !!user, bldg: !!bldg } },
       { status: 400 },
-    );
-  }
-
-  const lockKey = `${user}::${bldg}`;
-  if (INFLIGHT.has(lockKey)) {
-    return NextResponse.json(
-      { ok: false, reason: "同じ建物の作成処理が実行中です（二重送信をブロックしました）", code: "DUPLICATE_INFLIGHT" },
-      { status: 409 },
     );
   }
 
@@ -203,23 +215,39 @@ export async function POST(req: NextRequest) {
   const theme = toStr(body.theme ?? (metaObj ? metaObj["theme"] : undefined)).trim();
 
   const forwardBody = {
-    // Flow 側の入力に合わせて両方渡す（保険）
+    // Flow 側が var* を拾う想定
     varUser: user,
     varBldg: bldg,
     varHost,
-    varExcludePages: excludePages,
-    varExcludeFields: excludeFields,
-    varTheme: theme,
-    varRequestId: requestId,
 
+    // 念のため非varも送る
     user,
     bldg,
     host: varHost,
+
     excludePages,
     excludeFields,
     theme,
-    requestId,
+
+    varExcludePages: excludePages,
+    varExcludeFields: excludeFields,
+    varTheme: theme,
   };
+
+  // ===== 同一(user,bldg)の並列実行を弾く（ダブルクリック/二重送信対策）=====
+  const lockKey = `${user}__${bldg}`;
+  const locks = inflightMap();
+  if (locks.has(lockKey)) {
+    return NextResponse.json(
+      { ok: false, reason: "作成処理が既に進行中です（二重送信を停止しました）。", key: lockKey },
+      { status: 409 },
+    );
+  }
+
+  const timeoutMs = Math.min(
+    29_000,
+    Math.max(5_000, Number(process.env.FLOW_CREATE_FORM_FOLDER_TIMEOUT_MS || 28_000)),
+  );
 
   console.log("[api/flows/create-form-folder] calling Flow", {
     user,
@@ -227,22 +255,14 @@ export async function POST(req: NextRequest) {
     hasExcludePages: excludePages.length > 0,
     hasExcludeFields: excludeFields.length > 0,
     theme: theme || "",
-    requestId: requestId || "",
+    timeoutMs,
     url: safeUrl(FLOW_URL),
   });
 
-  INFLIGHT.add(lockKey);
+  locks.set(lockKey, Date.now());
   try {
-    // ★ここが重要：リトライしない（= Flow が二重起動しない）
-    // ★Heroku 30s 制限に収めるため 25s で強制タイムアウト
-    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, 25_000);
-
-    let json: any = {};
-    try {
-      json = text ? JSON.parse(text) : {};
-    } catch {
-      json = { raw: text };
-    }
+    // ★重要：リトライしない（= Flow を2回起動しない）
+    const { status, json, rawText } = await postOnce(FLOW_URL, forwardBody, timeoutMs);
 
     if (status < 200 || status >= 300 || json?.ok === false) {
       return NextResponse.json(
@@ -251,12 +271,13 @@ export async function POST(req: NextRequest) {
           reason: json?.reason || json?.error || `Flow HTTP ${status}`,
           upstreamStatus: status,
           upstream: json,
-          upstreamRaw: typeof json?.raw === "string" ? json.raw : text,
+          upstreamRaw: typeof json?.raw === "string" ? json.raw : rawText,
         },
         { status: 502 },
       );
     }
 
+    // upstream が 202 でもOK（あなたの Flow は 202 を返してる）
     return NextResponse.json(json, { status: 200 });
   } catch (e: any) {
     const code = e?.code || e?.cause?.code;
@@ -271,6 +292,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: false, reason: msg, code }, { status: 500 });
   } finally {
-    INFLIGHT.delete(lockKey);
+    locks.delete(lockKey);
   }
 }
