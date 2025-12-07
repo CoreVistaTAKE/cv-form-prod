@@ -63,6 +63,13 @@ function safeJsonParse(text: string) {
   }
 }
 
+function pickString(...cands: any[]): string | undefined {
+  for (const c of cands) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return undefined;
+}
+
 function normalizeSeq(seqRaw: any): string {
   const s = String(seqRaw ?? "").trim();
   return String(s || "001").padStart(3, "0");
@@ -121,7 +128,7 @@ const inflight = globalThis.__cvInflightSubmit ?? (globalThis.__cvInflightSubmit
 const INFLIGHT_TTL_MS = 15 * 60 * 1000;
 
 function inflightKey(user: string, bldg: string, seq: string) {
-  // reportStore と同一形式に統一
+  // reportStore のキー形式に統一
   return `${user}::${bldg}::${seq}`;
 }
 
@@ -178,14 +185,15 @@ export async function POST(req: NextRequest) {
   if (started) inflight.delete(key);
   inflight.set(key, now);
 
-  // ★前回の reportUrl が残ると「古いリンク」を表示するので、ここで必ず潰す
+  // ★ここが最重要：sheetKey を「リクエスト由来」で必ず確保して保存（Flowが返さなくても report-link が進める）
+  const initialSheetKey = pickString(sheet);
   saveReportResult({
     user,
     bldg,
     seq,
     status: "running",
-    reportUrl: undefined,
-    sheetKey: undefined,
+    reportUrl: undefined, // 古いリンク事故防止
+    sheetKey: initialSheetKey,
     traceId: undefined,
     error: undefined,
   });
@@ -211,7 +219,7 @@ export async function POST(req: NextRequest) {
     url: safeUrl(FLOW_URL),
   });
 
-  // 投げっぱなし（ただし retry はしない / 完了時に lock解除）
+  // 投げっぱなし（retryはしない / 完了時に lock解除）
   void (async () => {
     const startedAt = Date.now();
     try {
@@ -226,7 +234,7 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // JSONが壊れてるのに成功扱いすると reportUrl が空で “待ち続ける” のでエラー化
+      // JSON壊れは error に倒す（待ち続け事故防止）
       if (json && typeof json === "object" && "raw" in json) {
         console.warn("[/api/forms/submit] Flow response is not JSON", {
           status,
@@ -242,7 +250,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (json?.ok === false) {
-        console.warn("[/api/forms/submit] Flow error", { status, elapsedMs, user, bldg, seq, sheet, upstream: json });
+        console.warn("[/api/forms/submit] Flow returned ok:false", { elapsedMs, user, bldg, seq, sheet, upstream: json });
         saveReportResult({ user, bldg, seq, status: "error", error: "Flow returned ok:false" });
         return;
       }
@@ -259,7 +267,7 @@ export async function POST(req: NextRequest) {
         json?.body?.file_url ||
         json?.body?.url;
 
-      const sheetKey: string | undefined =
+      const sheetKeyFromFlow: string | undefined =
         json.sheetKey ||
         json.sheet_key ||
         json.sheet ||
@@ -279,23 +287,20 @@ export async function POST(req: NextRequest) {
         json?.body?.runId ||
         json?.body?.run_id;
 
-      if (!reportUrl) {
-        console.warn("[/api/forms/submit] Flow completed but reportUrl missing", {
-          status,
-          elapsedMs,
-          user,
-          bldg,
-          seq,
-          sheet,
-          sheetKey,
-          traceId,
-          upstream: json,
-        });
-        saveReportResult({ user, bldg, seq, status: "error", sheetKey, traceId, error: "reportUrl missing" });
-        return;
-      }
+      // reportUrl が無いのは「共有リンク未生成」なだけの可能性があるので error にしない
+      // sheetKey だけでも report-link が続行できる
+      const nextSheetKey = pickString(sheetKeyFromFlow, initialSheetKey);
 
-      saveReportResult({ user, bldg, seq, status: "success", reportUrl, sheetKey, traceId });
+      saveReportResult({
+        user,
+        bldg,
+        seq,
+        status: reportUrl ? "success" : "running",
+        reportUrl,
+        sheetKey: nextSheetKey,
+        traceId,
+        error: undefined,
+      });
 
       console.log("[/api/forms/submit] Flow completed", {
         status,
@@ -304,8 +309,8 @@ export async function POST(req: NextRequest) {
         bldg,
         seq,
         sheet,
-        hasUrl: true,
-        sheetKey,
+        hasUrl: !!reportUrl,
+        sheetKey: nextSheetKey,
         traceId,
       });
     } catch (e: any) {

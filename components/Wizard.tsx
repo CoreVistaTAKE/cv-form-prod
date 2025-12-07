@@ -34,9 +34,7 @@ export function Wizard(props: WizardProps) {
 
   const [idx, setIdx] = useState(0);
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
-  const [revisePrevItem, setRevisePrevItem] = useState<any | undefined>(
-    undefined,
-  );
+  const [revisePrevItem, setRevisePrevItem] = useState<any | undefined>(undefined);
   const [isFromRevise, setIsFromRevise] = useState(false);
   const [working, setWorking] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | undefined>();
@@ -47,39 +45,15 @@ export function Wizard(props: WizardProps) {
   const setValue = form.setValue;
   const watch = form.watch;
 
-  const infoIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "info"),
-    [pages],
-  );
-  const reviseIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "revise"),
-    [pages],
-  );
-  const reviseListIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "reviseList"),
-    [pages],
-  );
-  const basicIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "basic"),
-    [pages],
-  );
-  const prevIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "previous"),
-    [pages],
-  );
-  const reviewIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "review"),
-    [pages],
-  );
-  const completeIndex = useMemo(
-    () => pages.findIndex((p) => p.type === "complete"),
-    [pages],
-  );
+  const infoIndex = useMemo(() => pages.findIndex((p) => p.type === "info"), [pages]);
+  const reviseIndex = useMemo(() => pages.findIndex((p) => p.type === "revise"), [pages]);
+  const reviseListIndex = useMemo(() => pages.findIndex((p) => p.type === "reviseList"), [pages]);
+  const basicIndex = useMemo(() => pages.findIndex((p) => p.type === "basic"), [pages]);
+  const prevIndex = useMemo(() => pages.findIndex((p) => p.type === "previous"), [pages]);
+  const reviewIndex = useMemo(() => pages.findIndex((p) => p.type === "review"), [pages]);
+  const completeIndex = useMemo(() => pages.findIndex((p) => p.type === "complete"), [pages]);
   const sectionIdxs = useMemo(
-    () =>
-      pages
-        .map((p, i) => (p.type === "section" ? i : -1))
-        .filter((i) => i >= 0),
+    () => pages.map((p, i) => (p.type === "section" ? i : -1)).filter((i) => i >= 0),
     [pages],
   );
   const lastSectionIndex = useMemo(
@@ -107,15 +81,13 @@ export function Wizard(props: WizardProps) {
     applyTheme(meta.theme);
   }, [meta.theme]);
 
-  // ▼ 初期値：点検日と ReportSheet は JST（東京）で統一（sheet は YYMMDD） ★ここ修正
+  // ▼ 初期値：点検日と ReportSheet は JST（東京）で統一（sheet は YYMMDD）
   useEffect(() => {
     const defaultISO = isoDateTokyo(); // JST "YYYY-MM-DD"
     const cur = getValues("点検日") as string | undefined;
     if (!cur) {
-      // 初期点検日をセット
       setValue("点検日", defaultISO);
 
-      // toYYYYMMDD() が 20251203 形式なら、先頭2桁を落として 251203 にする
       const baseYYYYMMDD = toYYYYMMDD();
       const baseYYMMDD = baseYYYYMMDD.slice(2); // "20251203" -> "251203"
       setValue("ReportSheet（タブ名）", baseYYMMDD);
@@ -126,13 +98,10 @@ export function Wizard(props: WizardProps) {
         const raw = values["点検日"] as string | undefined;
         if (!raw) return;
 
-        const baseYYYYMMDD = toYYYYMMDD(
-          fromISODateStringJST(raw).toDate(),
-        ); // JSTでYYYYMMDD (20251203)
-        const baseYYMMDD = baseYYYYMMDD.slice(2); // 251203
+        const baseYYYYMMDD = toYYYYMMDD(fromISODateStringJST(raw).toDate()); // JSTでYYYYMMDD
+        const baseYYMMDD = baseYYYYMMDD.slice(2);
 
         const rs = values["ReportSheet（タブ名）"] as string | undefined;
-        // sheet が未設定、または「6桁(+_n)」形式なら自動更新を許可
         if (!rs || /^\d{6}(_\d+)?$/.test(rs)) {
           setValue("ReportSheet（タブ名）", baseYYMMDD);
         }
@@ -170,13 +139,7 @@ export function Wizard(props: WizardProps) {
   }
 
   // ▼ ナビゲーションボタン
-  const TopNav = ({
-    left,
-    right,
-  }: {
-    left: () => void;
-    right: () => void;
-  }) => (
+  const TopNav = ({ left, right }: { left: () => void; right: () => void }) => (
     <div className="flex items-center justify-between mb-2">
       <button className="btn-blue-light btn-nav" onClick={left}>
         ← 戻る
@@ -232,9 +195,7 @@ export function Wizard(props: WizardProps) {
     const sheet = (vals["ReportSheet（タブ名）"] || "").trim();
     const inspector = (vals["点検者名"] || "").trim();
 
-    const hasGroup = fields.some(
-      (f) => f.label === "【2名以上の点検】共同報告グループID",
-    );
+    const hasGroup = fields.some((f) => f.label === "【2名以上の点検】共同報告グループID");
     const groupId = hasGroup
       ? (vals["【2名以上の点検】共同報告グループID"] || "")
           .toString()
@@ -264,33 +225,17 @@ export function Wizard(props: WizardProps) {
 
     // ローカル保存（修正用）
     if (editingId) {
-      responses.update(editingId, {
-        building,
-        company,
-        inspector,
-        groupId,
-        dateISO,
-        sheet,
-        values,
-      });
+      responses.update(editingId, { building, company, inspector, groupId, dateISO, sheet, values });
     } else {
-      responses.create({
-        building,
-        company,
-        inspector,
-        groupId,
-        dateISO,
-        sheet,
-        values,
-      });
+      responses.create({ building, company, inspector, groupId, dateISO, sheet, values });
     }
 
     // === 「報告書作成」ボタン押下時の処理 ===
     if (submit && completeIndex >= 0) {
-      // 25秒待ってから、3秒間隔で最大 5 回ポーリング
+      // 25秒待ってから、3秒間隔で最大 30 回ポーリング（=最大約115秒）
       const firstDelayMs = 25_000;
       const pollIntervalMs = 3_000;
-      const maxAttempts = 5;
+      const maxAttempts = 30;
 
       // 完了ページへ遷移
       setIdx(completeIndex);
@@ -328,6 +273,8 @@ export function Wizard(props: WizardProps) {
         varValues: values,
       };
 
+      const transientReasons = new Set(["not_ready", "sheetkey_not_ready", "inflight", "reportUrl_missing"]);
+
       // /api/forms/report-link をポーリングして共有リンク取得
       const pollReportLink = async (attempt: number) => {
         try {
@@ -339,7 +286,12 @@ export function Wizard(props: WizardProps) {
               bldg,
               seq: normalizedSeq,
               sheet,
+              varUser: user,
+              varBldg: bldg,
+              varSeq: normalizedSeq,
               varSheet: sheet,
+              // サーバ側の保険用（storeが欠けても sheetKey を渡せる）
+              sheetKey: sheet,
             }),
           });
 
@@ -351,13 +303,13 @@ export function Wizard(props: WizardProps) {
             json = { raw: text };
           }
 
-          if (res.ok && json?.ok !== false) {
+          // HTTPが死んでる系は warn
+          if (!res.ok) {
+            console.warn("[Wizard] report-link HTTP error", res.status, json);
+          } else if (json?.ok === true) {
+            // 成功
             let urlFromFlow: string | undefined =
-              json.reportUrl ||
-              json.report_url ||
-              json.fileUrl ||
-              json.file_url ||
-              json.url;
+              json.reportUrl || json.report_url || json.fileUrl || json.file_url || json.url;
 
             if (!urlFromFlow && json.data) {
               urlFromFlow =
@@ -369,33 +321,49 @@ export function Wizard(props: WizardProps) {
             }
 
             if (typeof urlFromFlow === "string" && urlFromFlow.trim()) {
-              // 共有リンク取得成功 → ここで終了
               setReportUrl(urlFromFlow.trim());
               setWorking(false);
               return;
             }
+
+            // ok:true なのに url が無いのは upstream/実装ミスなので warn
+            console.warn("[Wizard] report-link ok:true but url missing", json);
           } else {
-            console.warn("[Wizard] report-link error", res.status, json);
+            const reason = typeof json?.reason === "string" ? json.reason : "";
+
+            // submit 側が error を返したら即停止（無限待ち防止）
+            if (reason === "submit_error") {
+              console.warn("[Wizard] submit_error", json);
+              setWorking(false);
+              return;
+            }
+
+            // 待機系は「正常」
+            if (reason && transientReasons.has(reason)) {
+              // console.debug に落としてノイズを減らす
+              console.debug("[Wizard] report-link pending", { attempt, reason });
+            } else {
+              // それ以外は一応警告（upstream_http_xxx など）
+              console.warn("[Wizard] report-link not ready", res.status, json);
+            }
           }
         } catch (e) {
           console.warn("[Wizard] report-link fetch failed", e);
         }
 
-        // ここまで来たらまだ生成中 or 失敗
         if (attempt >= maxAttempts) {
           console.warn("[Wizard] report-link timeout");
           setWorking(false);
           return;
         }
 
-        // 次のポーリングを予約
         setTimeout(() => {
           void pollReportLink(attempt + 1);
         }, pollIntervalMs);
       };
 
       try {
-        // ① 報告書作成フロー起動（非同期：/api/forms/submit は 202 Accepted を返すだけ）
+        // ① 報告書作成フロー起動（/api/forms/submit は 202 Accepted）
         const res = await fetch("/api/forms/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -416,7 +384,7 @@ export function Wizard(props: WizardProps) {
           return;
         }
 
-        // ② フロー起動を受け付けたら、25秒待ってから共有リンク取得フローを叩き始める
+        // ② 25秒待ってから共有リンク取得をポーリング
         setTimeout(() => {
           void pollReportLink(1);
         }, firstDelayMs);
@@ -447,8 +415,7 @@ export function Wizard(props: WizardProps) {
   }, [infoIndex, basicIndex, prevIndex, sectionIdxs, reviewIndex]);
 
   const curPos = Math.max(0, stepIndices.indexOf(idx));
-  const reviewPos =
-    reviewIndex >= 0 ? stepIndices.indexOf(reviewIndex) : stepIndices.length - 1;
+  const reviewPos = reviewIndex >= 0 ? stepIndices.indexOf(reviewIndex) : stepIndices.length - 1;
   const maxPos = Math.max(1, reviewPos);
   const percent = Math.min(100, Math.round((curPos * 100) / maxPos));
 
@@ -497,7 +464,6 @@ export function Wizard(props: WizardProps) {
             )}
           </div>
           <div className="flex items-center justify-end mt-3">
-            {/* 修正ページへの導線は消す（ページ自体は残す） */}
             <button
               className="btn-blue btn-nav"
               onClick={() => {
@@ -520,9 +486,7 @@ export function Wizard(props: WizardProps) {
       )}
 
       {/* 修正する回答ページ（ダミー） */}
-      {isReviseList && (
-        <ReviseListBlock setIdx={setIdx} indices={{ reviseIndex, basicIndex }} />
-      )}
+      {isReviseList && <ReviseListBlock setIdx={setIdx} indices={{ reviseIndex, basicIndex }} />}
 
       {/* 基本情報 */}
       {isBasic && (
@@ -549,12 +513,9 @@ export function Wizard(props: WizardProps) {
             }}
           />
           <div className="mb-2">
-            <div className="form-title">
-              {currentPage.title || "前回点検時の状況"}
-            </div>
+            <div className="form-title">{currentPage.title || "前回点検時の状況"}</div>
             <div className="form-text" style={{ opacity: 0.9 }}>
-              建物フォルダ内 <code>reports</code> フォルダにある
-              「前回の報告書（Excel）」へのリンクだけを表示します。
+              建物フォルダ内 <code>reports</code> フォルダにある「前回の報告書（Excel）」へのリンクだけを表示します。
             </div>
           </div>
           <div className="card">
@@ -603,47 +564,18 @@ export function Wizard(props: WizardProps) {
                   <div key={f.id} className="card">
                     <label className="form-text">
                       {f.label}
-                      {f.required && (
-                        <span style={{ color: "#f99", marginLeft: 8 }}>＊</span>
-                      )}
+                      {f.required && <span style={{ color: "#f99", marginLeft: 8 }}>＊</span>}
                     </label>
-                    {f.type === "text" && (
-                      <input className="input mt-2" {...register(f.label)} />
-                    )}
+                    {f.type === "text" && <input className="input mt-2" {...register(f.label)} />}
                     {f.type === "textarea" && (
-                      <textarea
-                        className="input mt-2"
-                        style={{ height: 110 }}
-                        {...register(f.label)}
-                      />
+                      <textarea className="input mt-2" style={{ height: 110 }} {...register(f.label)} />
                     )}
-                    {f.type === "number" && (
-                      <input
-                        type="text"
-                        className="input mt-2"
-                        {...register(f.label)}
-                      />
-                    )}
-                    {f.type === "date" && (
-                      <input
-                        type="date"
-                        className="input mt-2"
-                        {...register(f.label)}
-                      />
-                    )}
-                    {f.type === "time" && (
-                      <input
-                        type="time"
-                        className="input mt-2"
-                        step={60}
-                        {...register(f.label)}
-                      />
-                    )}
+                    {f.type === "number" && <input type="text" className="input mt-2" {...register(f.label)} />}
+                    {f.type === "date" && <input type="date" className="input mt-2" {...register(f.label)} />}
+                    {f.type === "time" && <input type="time" className="input mt-2" step={60} {...register(f.label)} />}
                     {f.type === "select" && (
                       <select className="input mt-2" {...register(f.label)}>
-                        <option value="">
-                          {"異常がある場合は選択してください"}
-                        </option>
+                        <option value="">{"異常がある場合は選択してください"}</option>
                         {(f.options || []).slice(0, 10).map((opt) => (
                           <option key={opt} value={opt}>
                             {opt}
@@ -685,15 +617,11 @@ export function Wizard(props: WizardProps) {
               .map((sp, i) => {
                 const entries = Object.entries(form.getValues())
                   .filter(([, v]) => String(v || "").trim() !== "")
-                  .filter(([k]) =>
-                    fields.some((f) => f.pageId === sp.id && f.label === k),
-                  );
+                  .filter(([k]) => fields.some((f) => f.pageId === sp.id && f.label === k));
                 if (entries.length === 0) return null;
                 return (
                   <div key={sp.id} className="card">
-                    <div className="form-title mb-1">
-                      {sp.title || `セクション ${i + 1}`}
-                    </div>
+                    <div className="form-title mb-1">{sp.title || `セクション ${i + 1}`}</div>
                     <div className="space-y-2">
                       {entries.map(([k, v]) => (
                         <div key={k} className="flex">
@@ -707,16 +635,10 @@ export function Wizard(props: WizardProps) {
               })}
           </div>
           <div className="flex items-center justify-between mt-3">
-            <button
-              className="btn-blue-light btn-nav"
-              onClick={() => setIdx(lastSectionIndex)}
-            >
+            <button className="btn-blue-light btn-nav" onClick={() => setIdx(lastSectionIndex)}>
               ← 戻る
             </button>
-            <button
-              className="btn-yellow btn-nav"
-              onClick={() => saveCurrent(true)}
-            >
+            <button className="btn-yellow btn-nav" onClick={() => saveCurrent(true)}>
               報告書作成 →
             </button>
           </div>
@@ -747,20 +669,10 @@ export function Wizard(props: WizardProps) {
 
 /* ===== 以下：修正・基本・前回表示の補助コンポーネント ===== */
 
-function ReviseBlock({
-  setIdx,
-  indices,
-  loadForEdit,
-}: {
-  setIdx: any;
-  indices: any;
-  loadForEdit: (id: string) => void;
-}) {
+function ReviseBlock({ setIdx, indices, loadForEdit }: { setIdx: any; indices: any; loadForEdit: (id: string) => void }) {
   const { meta } = useBuilderStore();
   const responses = useResponsesStore();
-  const [reviseBuilding, setReviseBuilding] = useState<string>(
-    meta.fixedBuilding || "",
-  );
+  const [reviseBuilding, setReviseBuilding] = useState<string>(meta.fixedBuilding || "");
   const [reviseInspector, setReviseInspector] = useState<string>("");
   const [reviseRespId, setReviseRespId] = useState<string>("");
 
@@ -839,14 +751,11 @@ function ReviseBlock({
       {!!reviseRespId &&
         (() => {
           const item = responses.getById(reviseRespId)!;
-          const entries = Object.entries(item.values || {}).filter(
-            ([, v]) => String(v || "").trim() !== "",
-          );
+          const entries = Object.entries(item.values || {}).filter(([, v]) => String(v || "").trim() !== "");
           return (
             <div className="card">
               <div className="form-title mb-1">
-                選択した回答の一覧（{item.sheet} /{" "}
-                {meta.fixedBuilding || item.building} / {item.inspector || ""}）
+                選択した回答の一覧（{item.sheet} / {meta.fixedBuilding || item.building} / {item.inspector || ""}）
               </div>
               <div className="space-y-2">
                 {entries.length === 0 && (
@@ -867,22 +776,11 @@ function ReviseBlock({
         })()}
 
       <div className="flex items-center justify-between mt-3">
-        <button
-          className="btn-red-light btn-nav"
-          onClick={() =>
-            setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)
-          }
-        >
+        <button className="btn-red-light btn-nav" onClick={() => setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)}>
           ← 戻る
         </button>
-        <button
-          className="btn-yellow btn-nav"
-          disabled={!reviseRespId}
-          onClick={() => loadForEdit(reviseRespId!)}
-        >
-          {indices.reviseListIndex >= 0
-            ? "修正する回答ページへ →"
-            : "回答の修正へ →"}
+        <button className="btn-yellow btn-nav" disabled={!reviseRespId} onClick={() => loadForEdit(reviseRespId!)}>
+          {indices.reviseListIndex >= 0 ? "修正する回答ページへ →" : "回答の修正へ →"}
         </button>
       </div>
     </>
@@ -896,23 +794,12 @@ function ReviseListBlock({ setIdx, indices }: { setIdx: any; indices: any }) {
         <div className="form-text">修正対象が選ばれていません。</div>
       </div>
       <div className="flex items-center justify-between mt-3">
-        <button
-          className="btn-blue-light btn-nav"
-          onClick={() =>
-            setIdx(indices.reviseIndex >= 0 ? indices.reviseIndex : 0)
-          }
-        >
+        <button className="btn-blue-light btn-nav" onClick={() => setIdx(indices.reviseIndex >= 0 ? indices.reviseIndex : 0)}>
           ← 戻る
         </button>
         <button
           className="btn-blue btn-nav"
-          onClick={() =>
-            setIdx(
-              indices.basicIndex >= 0
-                ? indices.basicIndex
-                : indices.reviseIndex + 1,
-            )
-          }
+          onClick={() => setIdx(indices.basicIndex >= 0 ? indices.basicIndex : indices.reviseIndex + 1)}
         >
           基本情報へ →
         </button>
@@ -921,14 +808,7 @@ function ReviseListBlock({ setIdx, indices }: { setIdx: any; indices: any }) {
   );
 }
 
-function BasicBlock({
-  setIdx,
-  indices,
-  register,
-  pages,
-  fields,
-  validateCurrent,
-}: any) {
+function BasicBlock({ setIdx, indices, register, pages, fields, validateCurrent }: any) {
   const pageId = pages[indices.basicIndex]?.id;
   const fs = fields.filter((f: any) => f.pageId === pageId);
   return (
@@ -939,45 +819,20 @@ function BasicBlock({
             <div key={f.id} className="card">
               <label className="form-text">
                 {f.label}
-                {f.required && (
-                  <span style={{ color: "#f99", marginLeft: 8 }}>＊</span>
-                )}
+                {f.required && <span style={{ color: "#f99", marginLeft: 8 }}>＊</span>}
               </label>
-              {!!f.description && (
-                <p className="form-text mt-1">{f.description}</p>
-              )}
+              {!!f.description && <p className="form-text mt-1">{f.description}</p>}
               {f.type === "text" && (
-                <input
-                  className="input mt-2"
-                  {...register(f.label)}
-                  placeholder={f.placeholder || ""}
-                />
+                <input className="input mt-2" {...register(f.label)} placeholder={f.placeholder || ""} />
               )}
-              {f.type === "date" && (
-                <input
-                  type="date"
-                  className="input mt-2"
-                  {...register(f.label)}
-                />
-              )}
-              {f.type === "number" && (
-                <input
-                  type="text"
-                  className="input mt-2"
-                  {...register(f.label)}
-                />
-              )}
+              {f.type === "date" && <input type="date" className="input mt-2" {...register(f.label)} />}
+              {f.type === "number" && <input type="text" className="input mt-2" {...register(f.label)} />}
             </div>
           ))}
         </div>
       </div>
       <div className="flex items-center justify-between mt-3">
-        <button
-          className="btn-red-light btn-nav"
-          onClick={() =>
-            setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)
-          }
-        >
+        <button className="btn-red-light btn-nav" onClick={() => setIdx(indices.infoIndex >= 0 ? indices.infoIndex : 0)}>
           ← 戻る
         </button>
         <button
@@ -996,17 +851,11 @@ function BasicBlock({
 
 /**
  * 前回点検時の状況ページ用コンポーネント（前回報告書リンクのみ表示）
- * - /api/forms/previous 経由で meta.previousFromExcel に入っている情報を使う前提
- * - item.reportUrl / item.fileName / item.lastModified あたりを読みに行く
  */
 function PrevGroupsView({ meta, watchBld }: any) {
-  // 建物名（固定値 or 入力中の値）
   const building = (meta.fixedBuilding || watchBld || "").trim();
-
-  // /api/forms/previous から埋め込まれた情報
   const prev = meta?.previousFromExcel || null;
 
-  // 共有リンク候補
   const url: string | undefined =
     (prev && typeof prev.reportUrl === "string" && prev.reportUrl) ||
     (prev && typeof prev.report_url === "string" && prev.report_url) ||
@@ -1015,19 +864,10 @@ function PrevGroupsView({ meta, watchBld }: any) {
     (prev && typeof prev.url === "string" && prev.url) ||
     undefined;
 
-  // ファイル名候補
-  const fileName: string | undefined =
-    (prev &&
-      (prev.fileName || prev.name || prev.displayName || prev.Name)) ||
-    undefined;
+  const fileName: string | undefined = (prev && (prev.fileName || prev.name || prev.displayName || prev.Name)) || undefined;
 
-  // 更新日時候補
   const lastModified: string | undefined =
-    (prev &&
-      (prev.lastModified ||
-        prev.lastModifiedDateTime ||
-        prev.modified)) ||
-    undefined;
+    (prev && (prev.lastModified || prev.lastModifiedDateTime || prev.modified)) || undefined;
 
   if (!prev) {
     return (
@@ -1042,12 +882,10 @@ function PrevGroupsView({ meta, watchBld }: any) {
   if (!url) {
     return (
       <div className="form-text" style={{ opacity: 0.85 }}>
-        reports フォルダに前回の報告書ファイルはありますが、
-        共有リンクが設定されていません。
+        reports フォルダに前回の報告書ファイルはありますが、共有リンクが設定されていません。
         <br />
-        OneDrive 側で共有リンクを作成するか、フローで
-        <code>Create share link</code> を追加して
-        <code>reportUrl</code> を返すようにしてください。
+        OneDrive 側で共有リンクを作成するか、フローで <code>Create share link</code> を追加して <code>reportUrl</code>{" "}
+        を返すようにしてください。
       </div>
     );
   }
@@ -1063,31 +901,17 @@ function PrevGroupsView({ meta, watchBld }: any) {
       )}
 
       <div className="card">
-        <div className="form-text mb-2">
-          下記リンクから、前回点検時に作成された報告書（Excel）を閲覧できます。
-        </div>
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-blue-300 underline break-all"
-        >
+        <div className="form-text mb-2">下記リンクから、前回点検時に作成された報告書（Excel）を閲覧できます。</div>
+        <a href={url} target="_blank" rel="noreferrer" className="text-blue-300 underline break-all">
           {fileName || "前回の報告書ファイルを開く"}
         </a>
         {lastModified && (
-          <div
-            className="form-text mt-2"
-            style={{ fontSize: 12, opacity: 0.8 }}
-          >
+          <div className="form-text mt-2" style={{ fontSize: 12, opacity: 0.8 }}>
             最終更新日：{lastModified}
           </div>
         )}
-        <div
-          className="form-text mt-3"
-          style={{ fontSize: 12, opacity: 0.8 }}
-        >
-          ※ 建物フォルダ内 <code>reports</code> フォルダにある Excel ファイルのうち、
-          最新のものを対象としています。
+        <div className="form-text mt-3" style={{ fontSize: 12, opacity: 0.8 }}>
+          ※ 建物フォルダ内 <code>reports</code> フォルダにある Excel ファイルのうち、最新のものを対象としています。
         </div>
       </div>
     </div>

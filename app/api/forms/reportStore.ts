@@ -37,7 +37,7 @@ function cleanupOldEntries() {
 }
 
 /**
- * ProcessFormSubmission の結果を保存（部分更新OK）
+ * ProcessFormSubmission / GetReportShareLink の結果を保存（部分更新OK）
  * - 明示的に undefined を渡した場合は「消す」
  * - status 未指定なら reportUrl / error から推定
  */
@@ -78,7 +78,7 @@ export function saveReportResult(params: {
     else next.status = "running";
   }
 
-  // running/error の時に古いURLが残るのは事故なので、URL未指定なら落とす
+  // running/error の時に古いURLが残る事故を防ぐ（reportUrl を明示指定してないなら落とす）
   if ((next.status === "running" || next.status === "error") && !hasOwn(params, "reportUrl")) {
     next.reportUrl = undefined;
   }

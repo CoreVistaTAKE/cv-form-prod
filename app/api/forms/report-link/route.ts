@@ -172,27 +172,49 @@ export async function POST(req: NextRequest) {
     const seqRaw = body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "";
     const seq = normalizeSeq(seqRaw);
 
+    // ★リクエストからも sheetKey 候補を拾う（storeが欠けても進める）
+    const reqSheetKey = pickString(body.sheetKey, body.sheet_key, body.varSheet, body.sheet);
+
     if (!user || !bldg || !seq) {
       return jsonNoStore({ ok: false, reason: "user / bldg / seq が不足しています。" }, 400);
     }
 
-    // 1) submit(背景) が保存した結果を参照（ここが主導）
+    // 1) submit(背景) が保存した結果を参照（キャッシュ）
     const stored = getReportResult(user, bldg, seq);
 
-    if (!stored) {
-      return jsonNoStore({ ok: false, reason: "not_ready" }, 200);
+    // submit 側が error を保存しているならそれを返す（無限ポーリング防止）
+    if (stored?.status === "error") {
+      return jsonNoStore(
+        {
+          ok: false,
+          reason: "submit_error",
+          error: stored.error,
+          sheetKey: stored.sheetKey ?? reqSheetKey,
+          traceId: stored.traceId,
+        },
+        200,
+      );
     }
 
-    const sheetKey = pickString(stored.sheetKey);
-    const traceId = pickString(stored.traceId);
-
-    // ProcessFormSubmission が reportUrl まで返しているなら、それを最優先で返す
-    const storedUrl = pickString(stored.reportUrl);
+    // reportUrl があるなら最優先で返す
+    const storedUrl = pickString(stored?.reportUrl);
     if (storedUrl) {
-      return jsonNoStore({ ok: true, reportUrl: storedUrl, sheetKey, traceId }, 200);
+      return jsonNoStore(
+        { ok: true, reportUrl: storedUrl, sheetKey: stored?.sheetKey ?? reqSheetKey, traceId: stored?.traceId },
+        200,
+      );
     }
 
-    // sheetKey が無いなら、リンク生成以前（= ポーリング継続）
+    // sheetKey は store 優先、無ければ request を採用
+    const sheetKey = pickString(stored?.sheetKey, reqSheetKey);
+    const traceId = pickString(stored?.traceId);
+
+    // store に sheetKey が無いのに request にはある → 埋めておく（次回から sheetkey_not_ready を出さない）
+    if (!pickString(stored?.sheetKey) && sheetKey) {
+      saveReportResult({ user, bldg, seq, status: "running", sheetKey });
+    }
+
+    // sheetKey が無いと Flow を叩けない
     if (!sheetKey) {
       return jsonNoStore({ ok: false, reason: "sheetkey_not_ready", traceId }, 200);
     }
@@ -208,7 +230,7 @@ export async function POST(req: NextRequest) {
     inflight.set(ikey, now);
 
     try {
-      // 2) sheetKey が取れたら、GetReportShareLink を起動してリンク生成
+      // 2) GetReportShareLink を起動してリンク生成
       const forwardBody = {
         ...body,
         user,
@@ -221,6 +243,7 @@ export async function POST(req: NextRequest) {
         varBldg: bldg,
         varSeq: seq,
         varSheet: sheetKey,
+        ...(traceId ? { traceId, varTraceId: traceId } : {}),
       };
 
       console.log("[/api/forms/report-link] calling Flow(GetReportShareLink)", {
@@ -265,25 +288,41 @@ export async function POST(req: NextRequest) {
         payload?.url,
       );
 
+      const nextTraceId = pickString(
+        payload?.traceId,
+        payload?.trace_id,
+        payload?.runId,
+        payload?.run_id,
+        traceId,
+      );
+
       if (!reportUrl) {
+        // 「まだ生成中/リンク未生成」もここに入る（= ポーリング継続対象）
         return jsonNoStore(
           {
             ok: false,
             reason: "reportUrl_missing",
             sheetKey,
-            traceId,
+            traceId: nextTraceId,
             reportFilePath: payload?.reportFilePath,
-            upstream: payload,
           },
           200,
         );
       }
 
       // 3) 取れたリンクを store に保存（次回から即返せる）
-      saveReportResult({ user, bldg, seq, reportUrl, sheetKey, traceId });
+      saveReportResult({
+        user,
+        bldg,
+        seq,
+        status: "success",
+        reportUrl,
+        sheetKey,
+        traceId: nextTraceId,
+      });
 
       return jsonNoStore(
-        { ok: true, reportUrl, sheetKey, traceId, reportFilePath: payload?.reportFilePath },
+        { ok: true, reportUrl, sheetKey, traceId: nextTraceId, reportFilePath: payload?.reportFilePath },
         200,
       );
     } finally {
