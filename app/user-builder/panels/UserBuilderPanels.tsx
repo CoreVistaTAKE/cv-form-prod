@@ -1,7 +1,7 @@
 // app/user-builder/panels/UserBuilderPanels.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
@@ -73,6 +73,8 @@ export default function UserBuilderPanels() {
   const [baseReady, setBaseReady] = useState(false);
   const [bootErr, setBootErr] = useState<string>("");
 
+  const abortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     initOnce();
   }, [initOnce]);
@@ -83,16 +85,32 @@ export default function UserBuilderPanels() {
 
   const loadBaseOnce = useCallback(async () => {
     setBootErr("");
+    setBaseReady(false);
+
+    // 同時リクエスト/ページ遷移での race を潰す
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     try {
       const r = await fetch("/api/forms/read-base", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ varUser: lookUser }),
+        signal: ac.signal,
+        cache: "no-store",
       });
+
       const t = await r.text();
       if (!r.ok) throw new Error(`read-base HTTP ${r.status} ${t}`);
 
-      const j = JSON.parse(t);
+      let j: any;
+      try {
+        j = JSON.parse(t);
+      } catch {
+        throw new Error(`read-base の返却が JSON ではありません: ${t.slice(0, 300)}`);
+      }
+
       if (!j?.schema) throw new Error("schema が空です");
 
       hydrateFrom(j.schema);
@@ -106,6 +124,7 @@ export default function UserBuilderPanels() {
 
       setBaseReady(true);
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       setBootErr(e?.message || String(e));
       setBaseReady(false);
     }
@@ -113,6 +132,9 @@ export default function UserBuilderPanels() {
 
   useEffect(() => {
     void loadBaseOnce();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [loadBaseOnce]);
 
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
@@ -146,19 +168,23 @@ export default function UserBuilderPanels() {
     });
   };
 
+  // ★修正: “ページ除外じゃないけど全項目除外” の時にボタンが解除できないバグを潰す
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
     if (!baseReady) return;
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
-    const wasExcluded = nextPages.has(pageId);
-    if (wasExcluded) {
+    const isExcluded =
+      nextPages.has(pageId) || (fieldIds.length > 0 && fieldIds.every((id) => nextFields.has(id)));
+
+    if (isExcluded) {
       nextPages.delete(pageId);
       fieldIds.forEach((id) => nextFields.delete(id));
     } else {
       nextPages.add(pageId);
       fieldIds.forEach((id) => nextFields.add(id));
     }
+
     commitExclude(nextPages, nextFields);
   };
 

@@ -15,6 +15,7 @@ try {
 }
 
 const FLOW_URL = process.env.FLOW_PROCESS_FORM_SUBMISSION_URL || "";
+const FLOW_TIMEOUT_MS = Number(process.env.FLOW_PROCESS_FORM_SUBMISSION_TIMEOUT_MS ?? 80_000);
 
 type Answer = {
   key: string;
@@ -27,17 +28,19 @@ function toAnswerArray(src: any): Answer[] {
   if (Array.isArray(src)) {
     return src
       .map((item) => ({
-        key: item && item.key != null ? String(item.key) : "",
+        key: item && item.key != null ? String(item.key).trim() : "",
         value: item && item.value != null ? String(item.value) : "",
       }))
       .filter((x) => x.key);
   }
 
   if (typeof src === "object") {
-    return Object.entries(src).map(([k, v]) => ({
-      key: String(k),
-      value: v == null ? "" : String(v),
-    }));
+    return Object.entries(src)
+      .map(([k, v]) => ({
+        key: String(k).trim(),
+        value: v == null ? "" : String(v),
+      }))
+      .filter((x) => x.key);
   }
 
   return [];
@@ -58,6 +61,11 @@ function safeJsonParse(text: string) {
   } catch {
     return { raw: text };
   }
+}
+
+function normalizeSeq(seqRaw: any): string {
+  const s = String(seqRaw ?? "").trim();
+  return String(s || "001").padStart(3, "0");
 }
 
 async function httpsPostJsonIPv4(
@@ -113,7 +121,8 @@ const inflight = globalThis.__cvInflightSubmit ?? (globalThis.__cvInflightSubmit
 const INFLIGHT_TTL_MS = 15 * 60 * 1000;
 
 function inflightKey(user: string, bldg: string, seq: string) {
-  return `${user}::${seq}::${bldg}`;
+  // reportStore と同一形式に統一
+  return `${user}::${bldg}::${seq}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -136,7 +145,7 @@ export async function POST(req: NextRequest) {
   const user = (body.varUser ?? body.user ?? "").toString().trim();
   const bldg = (body.varBldg ?? body.bldg ?? "").toString().trim();
   const seqRaw = body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "";
-  const seq = String(seqRaw || "001").padStart(3, "0");
+  const seq = normalizeSeq(seqRaw);
 
   const sheet = (body.varSheet ?? body.sheet ?? "").toString().trim();
 
@@ -168,7 +177,18 @@ export async function POST(req: NextRequest) {
   }
   if (started) inflight.delete(key);
   inflight.set(key, now);
-  saveReportResult({ user, bldg, seq, reportUrl: undefined, sheetKey: undefined, traceId: undefined });
+
+  // ★前回の reportUrl が残ると「古いリンク」を表示するので、ここで必ず潰す
+  saveReportResult({
+    user,
+    bldg,
+    seq,
+    status: "running",
+    reportUrl: undefined,
+    sheetKey: undefined,
+    traceId: undefined,
+    error: undefined,
+  });
 
   const forwardBody = {
     ...body,
@@ -195,21 +215,35 @@ export async function POST(req: NextRequest) {
   void (async () => {
     const startedAt = Date.now();
     try {
-      const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, 80_000);
+      const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, FLOW_TIMEOUT_MS);
       const json = safeJsonParse(text);
 
       const elapsedMs = Date.now() - startedAt;
 
-      if (status < 200 || status >= 300 || json?.ok === false) {
-        console.warn("[/api/forms/submit] Flow error", {
+      if (status < 200 || status >= 300) {
+        console.warn("[/api/forms/submit] Flow HTTP error", { status, elapsedMs, user, bldg, seq, sheet });
+        saveReportResult({ user, bldg, seq, status: "error", error: `Flow HTTP ${status}` });
+        return;
+      }
+
+      // JSONが壊れてるのに成功扱いすると reportUrl が空で “待ち続ける” のでエラー化
+      if (json && typeof json === "object" && "raw" in json) {
+        console.warn("[/api/forms/submit] Flow response is not JSON", {
           status,
           elapsedMs,
           user,
           bldg,
           seq,
           sheet,
-          upstream: json,
+          raw: String((json as any).raw ?? "").slice(0, 300),
         });
+        saveReportResult({ user, bldg, seq, status: "error", error: "Flow response is not JSON" });
+        return;
+      }
+
+      if (json?.ok === false) {
+        console.warn("[/api/forms/submit] Flow error", { status, elapsedMs, user, bldg, seq, sheet, upstream: json });
+        saveReportResult({ user, bldg, seq, status: "error", error: "Flow returned ok:false" });
         return;
       }
 
@@ -245,7 +279,23 @@ export async function POST(req: NextRequest) {
         json?.body?.runId ||
         json?.body?.run_id;
 
-      saveReportResult({ user, bldg, seq, reportUrl, sheetKey, traceId });
+      if (!reportUrl) {
+        console.warn("[/api/forms/submit] Flow completed but reportUrl missing", {
+          status,
+          elapsedMs,
+          user,
+          bldg,
+          seq,
+          sheet,
+          sheetKey,
+          traceId,
+          upstream: json,
+        });
+        saveReportResult({ user, bldg, seq, status: "error", sheetKey, traceId, error: "reportUrl missing" });
+        return;
+      }
+
+      saveReportResult({ user, bldg, seq, status: "success", reportUrl, sheetKey, traceId });
 
       console.log("[/api/forms/submit] Flow completed", {
         status,
@@ -254,7 +304,7 @@ export async function POST(req: NextRequest) {
         bldg,
         seq,
         sheet,
-        hasUrl: !!reportUrl,
+        hasUrl: true,
         sheetKey,
         traceId,
       });
@@ -266,6 +316,13 @@ export async function POST(req: NextRequest) {
         sheet,
         error: e?.message || String(e),
         code: e?.code || e?.cause?.code,
+      });
+      saveReportResult({
+        user,
+        bldg,
+        seq,
+        status: "error",
+        error: `${e?.code || e?.cause?.code || "ERROR"}: ${e?.message || String(e)}`,
       });
     } finally {
       inflight.delete(key);
