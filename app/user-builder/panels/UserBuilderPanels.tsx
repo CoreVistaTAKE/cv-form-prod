@@ -1,4 +1,3 @@
-// app/user-builder/panels/UserBuilderPanels.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -30,12 +29,13 @@ function SectionCard({
   );
 }
 
-type BuiltInfo = {
+type BuildJob = {
   user: string;
-  bldg: string;
+  requestedBldg: string;
+  startedAt: number;
   token?: string;
-  statusPath?: string;
   traceId?: string;
+  error?: string;
 };
 
 const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
@@ -65,8 +65,8 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  // ★作成要求の応答（BuildStatusに渡す）
-  const [built, setBuilt] = useState<BuiltInfo | null>(null);
+  // ★作成ジョブ（BuildStatus 用）
+  const [job, setJob] = useState<BuildJob | null>(null);
 
   const [baseReady, setBaseReady] = useState(false);
   const [bootErr, setBootErr] = useState<string>("");
@@ -113,6 +113,7 @@ export default function UserBuilderPanels() {
     void loadBaseOnce();
   }, [loadBaseOnce]);
 
+  // ===== フォームカラー（作成時のみ） =====
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
     { k: "white", name: "白", bg: "#ffffff", fg: "#111111", border: "#d9dfec" },
     { k: "black", name: "黒", bg: "#141d3d", fg: "#eef3ff", border: "#2b3a6f" },
@@ -122,6 +123,7 @@ export default function UserBuilderPanels() {
     { k: "green", name: "緑", bg: "#5ce0b1", fg: "#0f241e", border: "#234739" },
   ];
 
+  // ===== 対象外(非適用) UI =====
   const sectionPages = useMemo(() => pages.filter((p) => p.type === "section"), [pages]);
 
   const fieldsByPage = useMemo(() => {
@@ -202,26 +204,45 @@ export default function UserBuilderPanels() {
               excludePages={metaForCreate.excludePages}
               excludeFields={metaForCreate.excludeFields}
               theme={metaForCreate.theme as Theme | undefined}
-              onBuilt={(info) => {
-                setBuilt({
+              onStart={(info) => {
+                // ★ボタン押下で即スタート
+                setJob({
                   user: info.user,
-                  bldg: info.bldg,
-                  token: info.token,
-                  statusPath: info.statusPath,
-                  traceId: (info as any)?.traceId,
+                  requestedBldg: info.bldg,
+                  startedAt: info.startedAt,
+                  token: undefined,
+                  traceId: undefined,
+                  error: undefined,
                 });
+              }}
+              onBuilt={(info) => {
+                // token だけ受け取ってURL構築に使う（statusPath は使わない）
+                setJob((prev) =>
+                  prev
+                    ? { ...prev, token: info.token, traceId: info.traceId, error: undefined }
+                    : {
+                        user: info.user,
+                        requestedBldg: info.bldg,
+                        startedAt: Date.now(),
+                        token: info.token,
+                        traceId: info.traceId,
+                      },
+                );
+              }}
+              onError={(reason) => {
+                setJob((prev) => (prev ? { ...prev, error: reason } : prev));
               }}
             />
 
-            {/* ★作成中/作成結果はここ（建物枠の直下）に BuildStatus で表示 */}
-            {built?.statusPath ? (
+            {/* ★作成中/作成結果はこの直下に表示（statusPath不要） */}
+            {job ? (
               <BuildStatus
-                user={built.user}
-                bldg={built.bldg}
-                statusPath={built.statusPath}
-                token={built.token}
-                traceId={built.traceId}
-                justTriggered={true}
+                startedAt={job.startedAt}
+                user={job.user}
+                requestedBldg={job.requestedBldg}
+                token={job.token}
+                traceId={job.traceId}
+                error={job.error}
               />
             ) : null}
           </div>
@@ -335,8 +356,6 @@ export default function UserBuilderPanels() {
           </div>
         )}
       </SectionCard>
-
-      {/* ★ここにあった「作成結果」カードは削除（BuildStatus に統合） */}
     </div>
   );
 }

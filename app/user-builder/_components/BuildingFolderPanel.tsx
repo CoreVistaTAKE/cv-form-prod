@@ -5,9 +5,8 @@ import type { Theme } from "@/utils/theme";
 
 type BuiltInfo = {
   user: string;
-  bldg: string;
-  token?: string;
-  statusPath?: string;
+  bldg: string; // 入力値
+  token?: string; // Flow が返す最終フォルダ名
   traceId?: string;
   [k: string]: any;
 };
@@ -17,7 +16,15 @@ type Props = {
   excludePages: string[];
   excludeFields: string[];
   theme?: Theme;
+
+  // ★追加：ボタン押下直後に呼ぶ（ここでカウント開始）
+  onStart?: (info: { user: string; bldg: string; startedAt: number }) => void;
+
+  // Flow ack 成功
   onBuilt?: (info: BuiltInfo) => void;
+
+  // Flow ack 失敗
+  onError?: (reason: string) => void;
 };
 
 const CANONICAL_HOST = process.env.NEXT_PUBLIC_CANONICAL_HOST || "";
@@ -51,46 +58,30 @@ function getVarHost() {
   return "";
 }
 
-/**
- * NOTE:
- * - 「空」は通常状態なのでエラー扱いしない（赤字を出さない）
- * - 送信時にだけ必須チェックする
- */
-function validateBldgNameNonEmptyOnly(nameRaw: string) {
+// 空は通常（OK）。入力がある時だけチェックする
+function validateBldgIfNotEmpty(nameRaw: string) {
   const name = (nameRaw || "").trim();
-
-  // 空はここではOK（通常状態）
   if (!name) return "";
 
   if (name.length > 80) return "建物名が長すぎます（80文字以内推奨）。";
-
-  // SharePoint/OneDrive フォルダ名で事故りやすい禁止文字
-  if (/[\/\\:*?"<>|]/.test(name)) {
-    return '建物名に使用できない文字が含まれています（/ \\ : * ? " < > |）。';
-  }
-
-  // 末尾ドット/スペースは事故りやすい
-  if (/[.\s]$/.test(name)) {
-    return "建物名の末尾に「.」または空白は使えません。";
-  }
+  if (/[\/\\:*?"<>|]/.test(name)) return '建物名に使用できない文字が含まれています（/ \\ : * ? " < > |）。';
+  if (/[.\s]$/.test(name)) return "建物名の末尾に「.」または空白は使えません。";
 
   return "";
 }
 
 export default function BuildingFolderPanel(props: Props) {
-  const { defaultUser, excludePages, excludeFields, theme, onBuilt } = props;
+  const { defaultUser, excludePages, excludeFields, theme, onStart, onBuilt, onError } = props;
 
   const [bldg, setBldg] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const [msg, setMsg] = useState<string>("");
 
-  const nonEmptyValidation = useMemo(() => validateBldgNameNonEmptyOnly(bldg), [bldg]);
+  const localErr = useMemo(() => validateBldgIfNotEmpty(bldg), [bldg]);
 
   const canSubmit = useMemo(() => {
-    // ボタンは「入力がある時だけ」押せる
-    return !!defaultUser && bldg.trim().length > 0 && !nonEmptyValidation && !busy;
-  }, [defaultUser, bldg, nonEmptyValidation, busy]);
+    return !!defaultUser && bldg.trim().length > 0 && !localErr && !busy;
+  }, [defaultUser, bldg, localErr, busy]);
 
   async function submit() {
     if (busyRef.current) return;
@@ -98,29 +89,29 @@ export default function BuildingFolderPanel(props: Props) {
     const user = (defaultUser || "").trim();
     const name = (bldg || "").trim();
 
-    if (!user) {
-      setMsg("user が空です（defaultUser が未設定）。");
-      return;
-    }
+    if (!user) return;
 
-    // ★必須チェックは「送信時だけ」
-    if (!name) {
-      setMsg(""); // 空は通常。赤字も出さない。
-      return;
-    }
+    // 送信時だけ必須
+    if (!name) return;
 
-    // ★禁止文字などは送信時に弾く（ここは出してOK）
-    const vErr = validateBldgNameNonEmptyOnly(name);
+    const vErr = validateBldgIfNotEmpty(name);
     if (vErr) {
-      setMsg(vErr);
+      onError?.(vErr);
       return;
     }
+
+    const startedAt = Date.now();
+
+    // ★ここで即ステータス開始（UIに出す）
+    onStart?.({ user, bldg: name, startedAt });
+
+    // 入力欄は通常「空」に戻す
+    setBldg("");
 
     const requestId = uuidLike();
 
     busyRef.current = true;
     setBusy(true);
-    setMsg("");
 
     try {
       const varHost = getVarHost();
@@ -130,7 +121,6 @@ export default function BuildingFolderPanel(props: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           requestId,
-
           user,
           bldg: name,
 
@@ -159,36 +149,28 @@ export default function BuildingFolderPanel(props: Props) {
         const reason = j?.reason || `create-folder HTTP ${r.status}`;
 
         if (r.status === 409 || code === "INFLIGHT") {
-          setMsg("同じ建物の作成がすでに実行中です。少し待って進捗をご確認ください。");
+          onError?.("同じ建物の作成がすでに実行中です。時間をおいて再実行してください。");
           return;
         }
 
-        setMsg(`${reason}${code ? ` (${code})` : ""}`);
+        onError?.(`${reason}${code ? ` (${code})` : ""}`);
         return;
       }
 
-      const info: BuiltInfo = {
+      onBuilt?.({
         user,
         bldg: name,
         token: j?.token,
-        statusPath: j?.statusPath || j?.status_path,
         traceId: j?.traceId || j?.trace_id,
         ...j,
-      };
-
-      // ここで msg を強く出す必要なし。BuildStatus 側で見せる。
-      setMsg("");
-      onBuilt?.(info);
+      });
     } catch (e: any) {
-      setMsg(e?.message || String(e));
+      onError?.(e?.message || String(e));
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   }
-
-  const isHardError =
-    msg.includes("HTTP") || msg.includes("タイムアウト") || msg.includes("INFLIGHT") || msg.includes("失敗");
 
   return (
     <div className="space-y-3">
@@ -203,7 +185,7 @@ export default function BuildingFolderPanel(props: Props) {
         <input
           className="input"
           style={{ minWidth: 260 }}
-          placeholder="建物フォルダ名（例：FirstService_001_テストビル）"
+          placeholder="建物名（例：テストビル）"
           value={bldg}
           onChange={(e) => setBldg(e.target.value)}
           disabled={busy}
@@ -214,11 +196,9 @@ export default function BuildingFolderPanel(props: Props) {
         </button>
       </form>
 
-      {/* 空欄は通常なので、赤字を出さない。必要なら送信時 msg のみ */}
-      {!!msg && (
-        <div className="text-xs whitespace-pre-wrap" style={{ color: isHardError ? "#dc2626" : "#64748b" }}>
-          {msg}
-        </div>
+      {/* 空欄は通常。赤字は出さない。入力がある時だけガイド（任意） */}
+      {!!localErr && bldg.trim().length > 0 && (
+        <div className="text-xs text-red-600 whitespace-pre-wrap">{localErr}</div>
       )}
     </div>
   );
