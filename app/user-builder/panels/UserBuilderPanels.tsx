@@ -1,10 +1,11 @@
+// app/user-builder/panels/UserBuilderPanels.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
-import BuildingFolderPanel from "../_components/BuildingFolderPanel";
+import BuildingFolderPanel, { type BuiltInfo } from "../_components/BuildingFolderPanel";
 import BuildStatus from "../_components/BuildStatus.client";
 
 function SectionCard({
@@ -29,15 +30,11 @@ function SectionCard({
   );
 }
 
-type BuildJob = {
-  user: string;
-  requestedBldg: string;
+type BuildRun = {
   startedAt: number;
-
-  token?: string;
   finalUrl?: string;
+  qrUrl?: string;
   traceId?: string;
-
   error?: string;
 };
 
@@ -45,7 +42,9 @@ const ENV_DEFAULT_USER = process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService";
 
 function safeArrayOfString(v: any): string[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
+  return v
+    .filter((x) => typeof x === "string" && x.trim())
+    .map((x) => x.trim());
 }
 
 function normalizeMeta(maybeMeta: any) {
@@ -68,7 +67,8 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  const [job, setJob] = useState<BuildJob | null>(null);
+  // ★作成の進捗表示用（疑似）
+  const [run, setRun] = useState<BuildRun | null>(null);
 
   const [baseReady, setBaseReady] = useState(false);
   const [bootErr, setBootErr] = useState<string>("");
@@ -148,7 +148,6 @@ export default function UserBuilderPanels() {
 
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
     if (!baseReady) return;
-
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -165,7 +164,6 @@ export default function UserBuilderPanels() {
 
   const toggleFieldExclude = (fid: string) => {
     if (!baseReady) return;
-
     const nextPages = new Set(excludedPages);
     const nextFields = new Set(excludedFields);
 
@@ -197,58 +195,49 @@ export default function UserBuilderPanels() {
         {!baseReady ? (
           <div className="text-xs text-slate-500">BaseSystem を読み込み中です…</div>
         ) : (
-          <div>
+          <div className="space-y-3">
             <BuildingFolderPanel
               defaultUser={lookUser}
               excludePages={metaForCreate.excludePages}
               excludeFields={metaForCreate.excludeFields}
               theme={metaForCreate.theme as Theme | undefined}
               onStart={(info) => {
-                setJob({
-                  user: info.user,
-                  requestedBldg: info.bldg,
+                setRun({
                   startedAt: info.startedAt,
-                  token: undefined,
                   finalUrl: undefined,
+                  qrUrl: undefined,
                   traceId: undefined,
                   error: undefined,
                 });
               }}
-              onBuilt={(info) => {
-                setJob((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        token: info.token,
-                        finalUrl: info.finalUrl,
-                        traceId: info.traceId,
-                        error: undefined,
-                      }
-                    : {
-                        user: info.user,
-                        requestedBldg: info.bldg,
-                        startedAt: Date.now(),
-                        token: info.token,
-                        finalUrl: info.finalUrl,
-                        traceId: info.traceId,
-                      },
-                );
+              onBuilt={(info: BuiltInfo) => {
+                setRun((prev) => ({
+                  startedAt: prev?.startedAt ?? info.startedAt,
+                  finalUrl: info.finalUrl || info.formUrl,
+                  qrUrl: info.qrUrl,
+                  traceId: info.traceId,
+                  error: undefined,
+                }));
               }}
-              onError={(reason) => {
-                setJob((prev) => (prev ? { ...prev, error: reason } : prev));
+              onError={(e) => {
+                setRun((prev) => ({
+                  startedAt: prev?.startedAt ?? e.startedAt,
+                  finalUrl: undefined,
+                  qrUrl: undefined,
+                  traceId: undefined,
+                  error: e.reason,
+                }));
               }}
             />
 
-            {/* ★ここが本命：ボタン押下直後から進捗開始、40秒で finalUrl/QR 表示 */}
-            {job ? (
+            {/* ★作成枠の直下にステータス表示 */}
+            {run ? (
               <BuildStatus
-                startedAt={job.startedAt}
-                user={job.user}
-                requestedBldg={job.requestedBldg}
-                token={job.token}
-                finalUrl={job.finalUrl}
-                traceId={job.traceId}
-                error={job.error}
+                startedAt={run.startedAt}
+                finalUrl={run.finalUrl}
+                qrUrl={run.qrUrl}
+                traceId={run.traceId}
+                error={run.error}
               />
             ) : null}
           </div>
@@ -262,7 +251,9 @@ export default function UserBuilderPanels() {
           <div className="space-y-3">
             {sectionPages.map((p) => {
               const fs = (fieldsByPage[p.id] ?? []) as any[];
-              const fids = fs.map((f: any, idx: number) => (f.id ?? f.label ?? `f-${idx}`) as string).filter(Boolean);
+              const fids = fs
+                .map((f: any, idx: number) => (f.id ?? f.label ?? `f-${idx}`) as string)
+                .filter(Boolean);
 
               const pageExcluded = excludedPages.has(p.id);
               const allFieldExcluded = fids.length > 0 && fids.every((id) => excludedFields.has(id));
