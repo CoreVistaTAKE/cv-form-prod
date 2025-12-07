@@ -1,4 +1,3 @@
-// app/api/flows/create-form-folder/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import https from "node:https";
 import dns from "node:dns";
@@ -69,6 +68,9 @@ function originFromReq(req: NextRequest): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * https直叩き（IPv4固定）で POST JSON
+ */
 async function httpsPostJsonIPv4(
   urlStr: string,
   payload: any,
@@ -128,17 +130,20 @@ function inflightKey(user: string, bldg: string) {
   return `${user}::${bldg}`;
 }
 
-// Heroku 30s 制限ギリ。Flow は「202即返し」が本命。
-const FLOW_ACK_TIMEOUT_MS = 28_000;
+function unwrapFlowResponse(parsed: any) {
+  // Flowの「内部表現（statusCode/headers/body）」でも、素のbodyでも両対応
+  if (parsed && typeof parsed === "object" && parsed.body && typeof parsed.body === "object") {
+    return parsed.body;
+  }
+  return parsed;
+}
 
 export async function POST(req: NextRequest) {
   const FLOW_URL = process.env.FLOW_CREATE_FORM_FOLDER_URL || process.env.PA_CREATE_FORM_FOLDER_URL || "";
+  const TIMEOUT_MS = 28_000; // ★ 12s → 28s
 
   if (!FLOW_URL) {
-    return NextResponse.json(
-      { ok: false, reason: "FLOW_CREATE_FORM_FOLDER_URL がサーバー側で設定されていません。" },
-      { status: 500 },
-    );
+    return NextResponse.json({ ok: false, reason: "FLOW_CREATE_FORM_FOLDER_URL がサーバー側で設定されていません。" }, { status: 500 });
   }
   try {
     // eslint-disable-next-line no-new
@@ -167,10 +172,7 @@ export async function POST(req: NextRequest) {
 
   const lockKey = inflightKey(user, bldg);
   if (inflight.has(lockKey)) {
-    return NextResponse.json(
-      { ok: false, reason: "inflight: same request is already running", code: "INFLIGHT" },
-      { status: 409 },
-    );
+    return NextResponse.json({ ok: false, reason: "inflight: same request is already running", code: "INFLIGHT" }, { status: 409 });
   }
 
   inflight.set(lockKey, Date.now());
@@ -207,41 +209,41 @@ export async function POST(req: NextRequest) {
       hasExcludeFields: excludeFields.length > 0,
       theme: theme || "",
       url: safeUrl(FLOW_URL),
-      timeoutMs: FLOW_ACK_TIMEOUT_MS,
+      timeoutMs: TIMEOUT_MS,
     });
 
-    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, FLOW_ACK_TIMEOUT_MS);
+    const { status, text } = await httpsPostJsonIPv4(FLOW_URL, forwardBody, TIMEOUT_MS);
 
-    let json: any = {};
+    let parsed: any = {};
     try {
-      json = text ? JSON.parse(text) : {};
+      parsed = text ? JSON.parse(text) : {};
     } catch {
-      json = { raw: text };
+      parsed = { raw: text };
     }
 
-    if (status < 200 || status >= 300 || json?.ok === false) {
+    const payload = unwrapFlowResponse(parsed);
+
+    // ok:false は明確に失敗
+    if (payload?.ok === false) {
+      return NextResponse.json({ ok: false, reason: payload?.reason || payload?.error || "Flow returned ok:false", upstreamStatus: status, upstream: payload }, { status: 502 });
+    }
+
+    // upstream HTTPが2xx以外は失敗
+    if (status < 200 || status >= 300) {
       return NextResponse.json(
-        {
-          ok: false,
-          reason: json?.reason || json?.error || `Flow HTTP ${status}`,
-          upstreamStatus: status,
-          upstream: json,
-          upstreamRaw: typeof json?.raw === "string" ? json.raw : text,
-        },
+        { ok: false, reason: payload?.reason || payload?.error || `Flow HTTP ${status}`, upstreamStatus: status, upstream: payload },
         { status: 502 },
       );
     }
 
-    return NextResponse.json(json, { status: 200 });
+    // ★ ここが重要：クライアントが j.finalUrl で取れる形にする
+    return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     const code = e?.code || e?.cause?.code;
     const msg = e?.message || String(e);
 
     if (code === "ETIMEDOUT") {
-      return NextResponse.json(
-        { ok: false, reason: "Flow 接続がタイムアウトしました（PowerPlatform到達不可/遅延）", code },
-        { status: 504 },
-      );
+      return NextResponse.json({ ok: false, reason: "Flow 接続がタイムアウトしました（PowerPlatform到達不可/遅延）", code }, { status: 504 });
     }
     return NextResponse.json({ ok: false, reason: msg, code }, { status: 500 });
   } finally {
