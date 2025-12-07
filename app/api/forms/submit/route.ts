@@ -168,6 +168,7 @@ export async function POST(req: NextRequest) {
   }
   if (started) inflight.delete(key);
   inflight.set(key, now);
+  saveReportResult({ user, bldg, seq, reportUrl: undefined, sheetKey: undefined, traceId: undefined });
 
   const forwardBody = {
     ...body,
