@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useBuilderStore } from "@/store/builder";
 import { applyTheme, type Theme } from "@/utils/theme";
-import BuildingFolderPanel, { type BuiltInfo } from "../_components/BuildingFolderPanel";
+import BuildingFolderPanel from "../_components/BuildingFolderPanel";
 import BuildStatus from "../_components/BuildStatus.client";
 
 function SectionCard({
@@ -67,7 +67,6 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  // ★作成の進捗表示用（疑似）
   const [run, setRun] = useState<BuildRun | null>(null);
 
   const [baseReady, setBaseReady] = useState(false);
@@ -87,7 +86,6 @@ export default function UserBuilderPanels() {
     setBootErr("");
     setBaseReady(false);
 
-    // 同時リクエスト/ページ遷移での race を潰す
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -132,9 +130,7 @@ export default function UserBuilderPanels() {
 
   useEffect(() => {
     void loadBaseOnce();
-    return () => {
-      abortRef.current?.abort();
-    };
+    return () => abortRef.current?.abort();
   }, [loadBaseOnce]);
 
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
@@ -168,7 +164,7 @@ export default function UserBuilderPanels() {
     });
   };
 
-  // ★修正: “ページ除外じゃないけど全項目除外” の時にボタンが解除できないバグを潰す
+  // ★修正: “ページ除外じゃないけど全項目除外” の時に解除できないバグを潰す
   const toggleSectionExclude = (pageId: string, fieldIds: string[]) => {
     if (!baseReady) return;
     const nextPages = new Set(excludedPages);
@@ -227,36 +223,35 @@ export default function UserBuilderPanels() {
               excludePages={metaForCreate.excludePages}
               excludeFields={metaForCreate.excludeFields}
               theme={metaForCreate.theme as Theme | undefined}
-              onStart={(info) => {
+              onStart={(info: any) => {
                 setRun({
-                  startedAt: info.startedAt,
+                  startedAt: info?.startedAt ?? Date.now(),
                   finalUrl: undefined,
                   qrUrl: undefined,
                   traceId: undefined,
                   error: undefined,
                 });
               }}
-              onBuilt={(info: BuiltInfo) => {
+              onBuilt={(info: any) => {
                 setRun((prev) => ({
-                  startedAt: prev?.startedAt ?? info.startedAt,
-                  finalUrl: info.finalUrl || info.formUrl,
-                  qrUrl: info.qrUrl,
-                  traceId: info.traceId,
+                  startedAt: prev?.startedAt ?? info?.startedAt ?? Date.now(),
+                  finalUrl: info?.finalUrl || info?.formUrl,
+                  qrUrl: info?.qrUrl,
+                  traceId: info?.traceId,
                   error: undefined,
                 }));
               }}
-              onError={(e) => {
+              onError={(e: any) => {
                 setRun((prev) => ({
-                  startedAt: prev?.startedAt ?? e.startedAt,
+                  startedAt: prev?.startedAt ?? e?.startedAt ?? Date.now(),
                   finalUrl: undefined,
                   qrUrl: undefined,
                   traceId: undefined,
-                  error: e.reason,
+                  error: e?.reason ?? "error",
                 }));
               }}
             />
 
-            {/* ★作成枠の直下にステータス表示 */}
             {run ? (
               <BuildStatus
                 startedAt={run.startedAt}
