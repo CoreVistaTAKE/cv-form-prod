@@ -33,8 +33,11 @@ type BuildJob = {
   user: string;
   requestedBldg: string;
   startedAt: number;
+
   token?: string;
+  finalUrl?: string;
   traceId?: string;
+
   error?: string;
 };
 
@@ -65,7 +68,6 @@ export default function UserBuilderPanels() {
 
   const [lookUser] = useState<string>(ENV_DEFAULT_USER);
 
-  // ★作成ジョブ（BuildStatus 用）
   const [job, setJob] = useState<BuildJob | null>(null);
 
   const [baseReady, setBaseReady] = useState(false);
@@ -113,7 +115,6 @@ export default function UserBuilderPanels() {
     void loadBaseOnce();
   }, [loadBaseOnce]);
 
-  // ===== フォームカラー（作成時のみ） =====
   const themeItems: { k: Theme; name: string; bg: string; fg: string; border: string }[] = [
     { k: "white", name: "白", bg: "#ffffff", fg: "#111111", border: "#d9dfec" },
     { k: "black", name: "黒", bg: "#141d3d", fg: "#eef3ff", border: "#2b3a6f" },
@@ -123,7 +124,6 @@ export default function UserBuilderPanels() {
     { k: "green", name: "緑", bg: "#5ce0b1", fg: "#0f241e", border: "#234739" },
   ];
 
-  // ===== 対象外(非適用) UI =====
   const sectionPages = useMemo(() => pages.filter((p) => p.type === "section"), [pages]);
 
   const fieldsByPage = useMemo(() => {
@@ -193,7 +193,6 @@ export default function UserBuilderPanels() {
         </section>
       )}
 
-      {/* 建物フォルダを作成する */}
       <SectionCard id="folder" title="建物フォルダを作成する">
         {!baseReady ? (
           <div className="text-xs text-slate-500">BaseSystem を読み込み中です…</div>
@@ -205,26 +204,32 @@ export default function UserBuilderPanels() {
               excludeFields={metaForCreate.excludeFields}
               theme={metaForCreate.theme as Theme | undefined}
               onStart={(info) => {
-                // ★ボタン押下で即スタート
                 setJob({
                   user: info.user,
                   requestedBldg: info.bldg,
                   startedAt: info.startedAt,
                   token: undefined,
+                  finalUrl: undefined,
                   traceId: undefined,
                   error: undefined,
                 });
               }}
               onBuilt={(info) => {
-                // token だけ受け取ってURL構築に使う（statusPath は使わない）
                 setJob((prev) =>
                   prev
-                    ? { ...prev, token: info.token, traceId: info.traceId, error: undefined }
+                    ? {
+                        ...prev,
+                        token: info.token,
+                        finalUrl: info.finalUrl,
+                        traceId: info.traceId,
+                        error: undefined,
+                      }
                     : {
                         user: info.user,
                         requestedBldg: info.bldg,
                         startedAt: Date.now(),
                         token: info.token,
+                        finalUrl: info.finalUrl,
                         traceId: info.traceId,
                       },
                 );
@@ -234,13 +239,14 @@ export default function UserBuilderPanels() {
               }}
             />
 
-            {/* ★作成中/作成結果はこの直下に表示（statusPath不要） */}
+            {/* ★ここが本命：ボタン押下直後から進捗開始、40秒で finalUrl/QR 表示 */}
             {job ? (
               <BuildStatus
                 startedAt={job.startedAt}
                 user={job.user}
                 requestedBldg={job.requestedBldg}
                 token={job.token}
+                finalUrl={job.finalUrl}
                 traceId={job.traceId}
                 error={job.error}
               />
@@ -249,7 +255,6 @@ export default function UserBuilderPanels() {
         )}
       </SectionCard>
 
-      {/* 対象外(非適用)の設定 */}
       <SectionCard id="exclude" title="対象外(非適用)の設定">
         {!baseReady ? (
           <div className="text-xs text-slate-500">BaseSystem 読み込み後に設定できます。</div>
@@ -257,9 +262,7 @@ export default function UserBuilderPanels() {
           <div className="space-y-3">
             {sectionPages.map((p) => {
               const fs = (fieldsByPage[p.id] ?? []) as any[];
-              const fids = fs
-                .map((f: any, idx: number) => (f.id ?? f.label ?? `f-${idx}`) as string)
-                .filter(Boolean);
+              const fids = fs.map((f: any, idx: number) => (f.id ?? f.label ?? `f-${idx}`) as string).filter(Boolean);
 
               const pageExcluded = excludedPages.has(p.id);
               const allFieldExcluded = fids.length > 0 && fids.every((id) => excludedFields.has(id));
@@ -334,7 +337,6 @@ export default function UserBuilderPanels() {
         )}
       </SectionCard>
 
-      {/* フォームカラーの設定 */}
       <SectionCard id="color" title="フォームカラーの設定">
         {!baseReady ? (
           <div className="text-xs text-slate-500">BaseSystem 読み込み後に設定できます。</div>

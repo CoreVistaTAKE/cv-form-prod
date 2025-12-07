@@ -5,9 +5,10 @@ import type { Theme } from "@/utils/theme";
 
 type BuiltInfo = {
   user: string;
-  bldg: string; // 入力値
-  token?: string; // Flow が返す最終フォルダ名
+  bldg: string;
+  token?: string;
   traceId?: string;
+  finalUrl?: string;
   [k: string]: any;
 };
 
@@ -17,17 +18,10 @@ type Props = {
   excludeFields: string[];
   theme?: Theme;
 
-  // ★追加：ボタン押下直後に呼ぶ（ここでカウント開始）
   onStart?: (info: { user: string; bldg: string; startedAt: number }) => void;
-
-  // Flow ack 成功
   onBuilt?: (info: BuiltInfo) => void;
-
-  // Flow ack 失敗
   onError?: (reason: string) => void;
 };
-
-const CANONICAL_HOST = process.env.NEXT_PUBLIC_CANONICAL_HOST || "";
 
 function uuidLike() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,29 +38,13 @@ function safeJsonParse(text: string) {
   }
 }
 
-function normalizeOrigin(input: string) {
-  const s = (input || "").trim().replace(/\/+$/, "");
-  if (!s) return "";
-  if (/^https?:\/\//i.test(s)) return s;
-  return `https://${s}`;
-}
-
-function getVarHost() {
-  const canonical = normalizeOrigin(CANONICAL_HOST);
-  if (canonical) return canonical;
-  if (typeof window !== "undefined") return window.location.origin;
-  return "";
-}
-
 // 空は通常（OK）。入力がある時だけチェックする
 function validateBldgIfNotEmpty(nameRaw: string) {
   const name = (nameRaw || "").trim();
   if (!name) return "";
-
   if (name.length > 80) return "建物名が長すぎます（80文字以内推奨）。";
   if (/[\/\\:*?"<>|]/.test(name)) return '建物名に使用できない文字が含まれています（/ \\ : * ? " < > |）。';
   if (/[.\s]$/.test(name)) return "建物名の末尾に「.」または空白は使えません。";
-
   return "";
 }
 
@@ -88,10 +66,9 @@ export default function BuildingFolderPanel(props: Props) {
 
     const user = (defaultUser || "").trim();
     const name = (bldg || "").trim();
-
     if (!user) return;
 
-    // 送信時だけ必須
+    // 送信時だけ必須（空は通常）
     if (!name) return;
 
     const vErr = validateBldgIfNotEmpty(name);
@@ -101,8 +78,6 @@ export default function BuildingFolderPanel(props: Props) {
     }
 
     const startedAt = Date.now();
-
-    // ★ここで即ステータス開始（UIに出す）
     onStart?.({ user, bldg: name, startedAt });
 
     // 入力欄は通常「空」に戻す
@@ -114,8 +89,6 @@ export default function BuildingFolderPanel(props: Props) {
     setBusy(true);
 
     try {
-      const varHost = getVarHost();
-
       const r = await fetch("/api/flows/create-form-folder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -123,11 +96,6 @@ export default function BuildingFolderPanel(props: Props) {
           requestId,
           user,
           bldg: name,
-
-          varUser: user,
-          varBldg: name,
-          varHost,
-          host: varHost,
 
           excludePages: Array.isArray(excludePages) ? excludePages : [],
           excludeFields: Array.isArray(excludeFields) ? excludeFields : [],
@@ -157,11 +125,21 @@ export default function BuildingFolderPanel(props: Props) {
         return;
       }
 
+      // ★ Flow の Response から finalUrl を拾う（キー揺れ吸収）
+      const finalUrl =
+        j?.finalUrl ||
+        j?.final_url ||
+        j?.url ||
+        j?.formUrl ||
+        j?.publicUrl ||
+        "";
+
       onBuilt?.({
         user,
         bldg: name,
         token: j?.token,
         traceId: j?.traceId || j?.trace_id,
+        finalUrl: typeof finalUrl === "string" ? finalUrl : "",
         ...j,
       });
     } catch (e: any) {
@@ -185,7 +163,7 @@ export default function BuildingFolderPanel(props: Props) {
         <input
           className="input"
           style={{ minWidth: 260 }}
-          placeholder="建物名（例：テストビル）"
+          placeholder="建物フォルダ名（例：テストビル）"
           value={bldg}
           onChange={(e) => setBldg(e.target.value)}
           disabled={busy}
@@ -196,7 +174,7 @@ export default function BuildingFolderPanel(props: Props) {
         </button>
       </form>
 
-      {/* 空欄は通常。赤字は出さない。入力がある時だけガイド（任意） */}
+      {/* 空欄は通常なので赤字は出さない。入力がある時だけ禁止文字を出す */}
       {!!localErr && bldg.trim().length > 0 && (
         <div className="text-xs text-red-600 whitespace-pre-wrap">{localErr}</div>
       )}

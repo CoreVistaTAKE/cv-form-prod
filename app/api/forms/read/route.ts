@@ -1,21 +1,17 @@
-// app/api/forms/read/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import https from "node:https";
 import dns from "node:dns";
 import type { IncomingHttpHeaders } from "node:http";
 
-// 明示的に Node ランタイム & 非キャッシュ
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Heroku/Undici/LogicApps 系で IPv6 が刺さることがあるので念のため
 try {
   dns.setDefaultResultOrder("ipv4first");
 } catch {
   // ignore
 }
 
-// Flow URL（環境差分に強くする）
 const FLOW_URL =
   process.env.FLOW_READ_FORM_URL ||
   process.env.FLOW_FORMS_READ_URL ||
@@ -23,7 +19,6 @@ const FLOW_URL =
   process.env.FLOW_GET_FORM_SCHEMA_URL ||
   "";
 
-// 例: "FirstService_001_テストビルB"
 const BUILDING_TOKEN_RE = /^([A-Za-z0-9]+)_(\d{3})_(.+)$/;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,16 +26,52 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function safeUrl(raw: string) {
   try {
     const u = new URL(raw);
-    // sig 等のクエリはログに出さない
     return `${u.origin}${u.pathname}`;
   } catch {
     return "<invalid-url>";
   }
 }
 
-/**
- * fetch(undici) を避けて、https 直叩き（IPv4固定）で POST JSON。
- */
+function safeStringArray(v: any): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((x) => (typeof x === "string" ? x.trim() : ""))
+    .filter(Boolean);
+}
+
+function applyExcludeToEnabled(schema: any) {
+  const meta = schema?.meta || {};
+  const exPages = new Set<string>(safeStringArray(meta.excludePages));
+  const exFields = new Set<string>(safeStringArray(meta.excludeFields));
+
+  if (Array.isArray(schema?.pages) && exPages.size > 0) {
+    schema.pages = schema.pages.map((p: any) => {
+      if (!p || typeof p !== "object") return p;
+      const id = typeof p.id === "string" ? p.id : "";
+      if (id && exPages.has(id)) return { ...p, enabled: false };
+      return p;
+    });
+  }
+
+  if (Array.isArray(schema?.fields) && exFields.size > 0) {
+    schema.fields = schema.fields.map((f: any) => {
+      if (!f || typeof f !== "object") return f;
+      const id = typeof f.id === "string" ? f.id : "";
+      if (id && exFields.has(id)) return { ...f, enabled: false };
+      return f;
+    });
+  }
+
+  // meta の正規化（念のため）
+  schema.meta = {
+    ...(meta || {}),
+    excludePages: Array.from(exPages),
+    excludeFields: Array.from(exFields),
+  };
+
+  return schema;
+}
+
 async function httpsPostJsonIPv4(
   urlStr: string,
   payload: any,
@@ -66,7 +97,7 @@ async function httpsPostJsonIPv4(
         path: `${u.pathname}${u.search}`,
         method: "POST",
         headers,
-        family: 4, // ★ IPv4固定
+        family: 4,
       } as any,
       (res) => {
         let data = "";
@@ -104,11 +135,7 @@ async function postJsonWithRetry(
 
   for (let attempt = 1; attempt <= opts.attempts; attempt++) {
     try {
-      const { status, text } = await httpsPostJsonIPv4(
-        url,
-        payload,
-        opts.timeoutMs,
-      );
+      const { status, text } = await httpsPostJsonIPv4(url, payload, opts.timeoutMs);
 
       let json: any = {};
       try {
@@ -163,23 +190,16 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as any;
 
-    const user = (
-      body.varUser ||
-      body.user ||
-      process.env.NEXT_PUBLIC_DEFAULT_USER ||
-      "FirstService"
-    )
+    const user = (body.varUser || body.user || process.env.NEXT_PUBLIC_DEFAULT_USER || "FirstService")
       .toString()
       .trim();
 
     const bldgRaw = (body.varBldg || body.bldg || "").toString().trim();
 
-    // seq は揺れ吸収（/fill?Sseq=001 対応）
     let seqRaw = (body.varSeq ?? body.seq ?? body.Sseq ?? body.sseq ?? "").toString();
     if (!/^\d+$/.test(seqRaw)) seqRaw = "001";
     let seq = seqRaw.padStart(3, "0");
 
-    // ===== bldgRaw から建物名と seq を抽出 =====
     let buildingName = bldgRaw;
     const m = BUILDING_TOKEN_RE.exec(bldgRaw);
     if (m) {
@@ -190,10 +210,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!user || !buildingName || !seq) {
-      return NextResponse.json(
-        { ok: false, reason: "user / bldg / seq が不足しています。" },
-        { status: 400 },
-      );
+      return NextResponse.json({ ok: false, reason: "user / bldg / seq が不足しています。" }, { status: 400 });
     }
 
     console.log("[api/forms/read] calling Flow", {
@@ -230,25 +247,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ===== Flow 応答から schema を抽出 =====
     let schema: any;
 
     if (json?.ok && json.schema) schema = json.schema;
     else if (json?.ok && json.data?.schema) schema = json.data.schema;
-    else if (json?.meta && Array.isArray(json.pages) && Array.isArray(json.fields))
-      schema = json;
-    else if (
-      json?.body?.meta &&
-      Array.isArray(json.body.pages) &&
-      Array.isArray(json.body.fields)
-    )
-      schema = json.body;
+    else if (json?.meta && Array.isArray(json.pages) && Array.isArray(json.fields)) schema = json;
+    else if (json?.body?.meta && Array.isArray(json.body.pages) && Array.isArray(json.body.fields)) schema = json.body;
     else if (json?.body?.ok && json.body.schema) schema = json.body.schema;
     else {
-      const reason =
-        json?.reason || json?.error || "Flow 応答に schema が含まれていません。";
+      const reason = json?.reason || json?.error || "Flow 応答に schema が含まれていません。";
       return NextResponse.json({ ok: false, reason, upstream: json }, { status: 500 });
     }
+
+    // ★ここが重要：exclude を enabled に落として「確実に反映」
+    schema = applyExcludeToEnabled(schema);
 
     return NextResponse.json({ ok: true, schema }, { status: 200 });
   } catch (err: any) {
